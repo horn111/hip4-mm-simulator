@@ -6,7 +6,7 @@ build-backend = "poetry.core.masonry.api"
 name = "hl-paper-trading"
 version = "0.1.0"
 description = "Paper trading framework for Hyperliquid HIP-4 outcome markets (0.0–1.0). Pessimistic execution engine for market-maker strategy development."
-authors = ["Hyperliquid Outcomes Team"]
+authors = ["horn111"]
 license = "MIT"
 readme = "README.md"
 packages = [{include = "hl_paper_trading", from = "src"}]
@@ -35,6 +35,7 @@ mypy = ">=1.10"
 [tool.poetry.group.live.dependencies]
 websockets = ">=12.0"
 aiohttp = ">=3.9"
+hyperliquid-python-sdk = ">=0.8"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

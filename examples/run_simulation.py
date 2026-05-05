@@ -68,7 +68,7 @@ async def run_simulation(
         market=market,
         initial_price=initial_price,
         tick_interval_ms=50,
-        volatility=0.003,
+        volatility=0.008,
         seed=seed,
     )
 
@@ -76,7 +76,7 @@ async def run_simulation(
     strategy = InventorySkewMM(
         oms=oms,
         wallet=wallet,
-        half_spread=Decimal("0.015"),
+        half_spread=Decimal("0.008"),
         order_size=Decimal("25"),
         max_inventory=Decimal("300"),
         skew_factor=Decimal("0.00005"),

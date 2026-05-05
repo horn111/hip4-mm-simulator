@@ -148,20 +148,20 @@ python examples/run_simulation.py --trades 3000 --seed 123
   SIMULATION RESULTS
 ======================================================================
   Trades Processed:    1998
-  Fills Generated:     47
-  Final Mark Price:    0.5271
+  Fills Generated:     883
+  Final Mark Price:    0.5717
   ---
-  USDC Balance:        9987.4200
-  YES Inventory:       23
-  Avg Entry (YES):     0.4892
+  USDC Balance:        9972.3848
+  YES Inventory:       -25.31
+  Avg Entry (YES):     0.5602
   ---
-  Realized PnL:        1.2350
-  Unrealized PnL:      0.8723
-  Total PnL:           2.1073
+  Realized PnL:        1159.6482
+  Unrealized PnL:      -0.2915
+  Total PnL:           1159.3568
 ======================================================================
 
-  Engine: {'total_trades_processed': 1998, 'total_fills_generated': 47}
-  OMS:    {'total_submitted': 1332, 'total_rejected': 0, 'total_cancelled': 1286}
+  Engine: {'total_trades_processed': 1998, 'total_fills_generated': 883}
+  OMS:    {'total_submitted': 1332, 'total_rejected': 0, 'total_cancelled': 1184}
 ```
 
 ### Run Tests
@@ -242,27 +242,30 @@ export HL_PAPER_LOG_LEVEL=DEBUG
 ## 📁 Project Structure
 
 ```
-hyperliquid-outcomes-paper-trading/
+hip4-mm-simulator/
 ├── README.md                          # This file
 ├── pyproject.toml                     # Poetry project config
 ├── main.py                            # CLI entry point
 ├── src/
 │   └── hl_paper_trading/
 │       ├── __init__.py                # Public API exports
-│       ├── types.py                   # Domain types (Pydantic models)
+│       ├── types.py                   # Domain types + HIP-4 asset encoding
 │       ├── virtual_wallet.py          # Portfolio accounting
 │       ├── virtual_oms.py             # Order Management System
 │       ├── matching_engine.py         # Pessimistic fill engine ⭐
 │       ├── strategy.py                # BaseStrategy (BYOL interface)
+│       ├── hyperliquid_ws.py          # Real mainnet WebSocket connector 🔌
 │       ├── mock_ws.py                 # Mock WebSocket (synthetic + replay)
 │       └── utils.py                   # Logging, config, helpers
 ├── examples/
 │   ├── basic_strategy.py              # InventorySkewMM example
-│   └── run_simulation.py              # Full simulation runner
+│   ├── run_simulation.py              # Offline simulation runner
+│   └── live_paper_trade.py            # Live mainnet paper trading 🔴
 ├── tests/
-│   ├── test_matching.py               # Matching engine tests (23 cases)
-│   ├── test_wallet.py                 # Wallet accounting tests
-│   └── test_oms.py                    # OMS lifecycle tests
+│   ├── test_matching.py               # Matching engine tests (19 cases)
+│   ├── test_wallet.py                 # Wallet accounting tests (12 cases)
+│   └── test_oms.py                    # OMS lifecycle tests (8 cases)
+├── .github/workflows/tests.yml        # CI: Python 3.11/3.12
 └── .gitignore
 ```
 
@@ -275,26 +278,29 @@ hyperliquid-outcomes-paper-trading/
 - [x] BYOL strategy interface
 - [x] Mock WebSocket (synthetic + file replay)
 - [x] Example strategy (inventory skew MM)
-- [x] Comprehensive test suite
+- [x] Comprehensive test suite (39 tests)
+- [x] HIP-4 asset encoding (`100_000_000 + 10*outcome + side`)
+- [x] Real-time Hyperliquid mainnet WebSocket connector
+- [x] CI/CD pipeline (GitHub Actions, Python 3.11/3.12)
 
-### Phase 2 — Live Feed Integration (Next)
-- [ ] Real-time Hyperliquid mainnet WebSocket connector
-- [ ] L2 order book reconstruction
-- [ ] Multi-market support
+### Phase 2 — Live Feed Enhancement (Next — Grant Phase)
+- [ ] L2 order book reconstruction from live feed
+- [ ] Multi-market outcome support (simultaneous markets)
+- [ ] Outcome market settlement simulation (daily 06:00 UTC)
 - [ ] Performance metrics dashboard (Streamlit/Grafana)
 - [ ] Trade history export (CSV / Parquet)
+- [ ] Builder Code integration for fee-earning strategies
 
 ### Phase 3 — Advanced Features
 - [ ] Monte Carlo simulation mode
 - [ ] Slippage and fee modeling
 - [ ] Multi-strategy portfolio simulation
-- [ ] Outcome market settlement simulation
+- [ ] Adverse selection analytics
 - [ ] REST API for remote strategy control
 
 ### Phase 4 — Production Deployment
 - [ ] Docker containerization
 - [ ] Kubernetes deployment manifests
-- [ ] CI/CD pipeline (GitHub Actions)
 - [ ] Real-time monitoring and alerting
 - [ ] Strategy parameter optimization framework
 
@@ -342,6 +348,15 @@ MIT License — see [LICENSE](LICENSE) for details.
 ### 🏆 Grant Application
 
 This project was submitted to the Hyperliquid Builders Program (May 2026).
+
+**Proposed Use of Grant Funds:**
+
+| Phase | Deliverables | Timeline | Budget |
+|---|---|---|---|
+| Phase 2 — Live Feed | L2 book reconstruction, multi-market, settlement sim, Streamlit dashboard | 6 weeks | $15,000 |
+| Phase 3 — Advanced | Monte Carlo, fee modeling, adverse selection analytics, multi-strategy | 8 weeks | $20,000 |
+| Phase 4 — Production | Docker, monitoring, optimization framework, documentation | 4 weeks | $15,000 |
+
 Form: [Hyperliquid Builders Program](https://docs.google.com/forms/d/e/1FAIpQLScJ8ZueDUSQtQaiQ1-8-sgEiAoaAt-iqKAvN1o2kX5sbwlGvA/viewform)
 
 ---

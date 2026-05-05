@@ -57,6 +57,100 @@ class ContractType(str, enum.Enum):
 
 
 # ---------------------------------------------------------------------------
+# HIP-4 Outcome Market Asset Encoding
+# ---------------------------------------------------------------------------
+# Per the HIP-4 specification:
+#   encoding = 10 * outcome_id + side  (side: 0 = YES, 1 = NO)
+#   Outcome spot coin:  #<encoding>     (e.g. #10)
+#   Outcome token name: +<encoding>     (e.g. +10)
+#   Outcome asset ID:   100_000_000 + encoding
+#
+# See: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/asset-ids#outcomes
+# ---------------------------------------------------------------------------
+
+OUTCOME_ASSET_BASE = 100_000_000
+
+
+def outcome_encoding(outcome_id: int, side: int) -> int:
+    """Compute the HIP-4 encoding for an outcome + side pair.
+
+    Args:
+        outcome_id: The outcome identifier (e.g. 1 for BTC daily).
+        side: 0 (YES) or 1 (NO).
+
+    Returns:
+        Integer encoding used in coin/token/asset representations.
+
+    Raises:
+        ValueError: If side is not 0 or 1.
+    """
+    if side not in (0, 1):
+        raise ValueError(f"Side must be 0 (YES) or 1 (NO), got {side}")
+    return 10 * outcome_id + side
+
+
+def outcome_asset_id(outcome_id: int, side: int) -> int:
+    """Return the Hyperliquid asset ID for an outcome market.
+
+    Example:
+        >>> outcome_asset_id(1, 0)  # BTC daily YES
+        100000010
+    """
+    return OUTCOME_ASSET_BASE + outcome_encoding(outcome_id, side)
+
+
+def outcome_coin_name(outcome_id: int, side: int) -> str:
+    """Return the spot coin name (``#<encoding>``) for an outcome.
+
+    Example:
+        >>> outcome_coin_name(1, 0)
+        '#10'
+    """
+    return f"#{outcome_encoding(outcome_id, side)}"
+
+
+def outcome_token_name(outcome_id: int, side: int) -> str:
+    """Return the token name (``+<encoding>``) for an outcome.
+
+    Example:
+        >>> outcome_token_name(1, 0)
+        '+10'
+    """
+    return f"+{outcome_encoding(outcome_id, side)}"
+
+
+class OutcomeMarket(BaseModel):
+    """Represents a HIP-4 outcome market with proper asset encoding.
+
+    Attributes:
+        outcome_id: Protocol-level outcome identifier.
+        name: Human-readable name (e.g. "BTC-50K-DAILY").
+        yes_asset_id: Encoded asset ID for the YES side.
+        no_asset_id: Encoded asset ID for the NO side.
+        yes_coin: Spot coin name for YES (e.g. "#10").
+        no_coin: Spot coin name for NO (e.g. "#11").
+        settlement_time_utc: Daily settlement time (e.g. "06:00").
+    """
+
+    outcome_id: int
+    name: str
+    yes_asset_id: int = 0
+    no_asset_id: int = 0
+    yes_coin: str = ""
+    no_coin: str = ""
+    settlement_time_utc: str = "06:00"
+
+    model_config = {"frozen": True}
+
+    def model_post_init(self, __context: object) -> None:
+        """Auto-derive asset IDs and coin names from outcome_id."""
+        object.__setattr__(self, "yes_asset_id", outcome_asset_id(self.outcome_id, 0))
+        object.__setattr__(self, "no_asset_id", outcome_asset_id(self.outcome_id, 1))
+        object.__setattr__(self, "yes_coin", outcome_coin_name(self.outcome_id, 0))
+        object.__setattr__(self, "no_coin", outcome_coin_name(self.outcome_id, 1))
+
+
+# ---------------------------------------------------------------------------
 # Value Objects
 # ---------------------------------------------------------------------------
 
