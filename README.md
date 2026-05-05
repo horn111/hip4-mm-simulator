@@ -1,5 +1,9 @@
 # Hyperliquid Outcomes Paper Trading Framework
 
+![Tests](https://github.com/horn111/hip4-mm-simulator/actions/workflows/tests.yml/badge.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
 <p align="center">
   <strong>🏗️ Production-ready paper trading engine for HIP-4 outcome markets (0.0–1.0)</strong>
 </p>
@@ -27,6 +31,23 @@ A **framework-level** paper trading engine that lets market-makers:
 - **Simulate pessimistic execution** (how prop trading firms actually backtest)
 - **Track portfolio P&L** with proper VWAP, inventory accounting, and outcome market settlement logic
 - **Bring their own logic** via a clean strategy interface
+
+## 🤔 Why Not Just Use Hyperliquid Testnet?
+
+While the testnet is useful for basic integration checks, it is **not suitable** for serious market-making strategy development on HIP-4 markets. Here's why professional quant teams choose a realistic paper trading engine instead:
+
+| Aspect                      | Hyperliquid Testnet                          | This Framework (Mainnet Paper Trading)              |
+|-----------------------------|----------------------------------------------|-----------------------------------------------------|
+| **Data quality**            | Artificial, low-volume order flow            | **Real mainnet WebSocket trades**                   |
+| **Execution realism**       | Optimistic / "as-if" fills                   | **Strict pessimistic model** (real queue position)  |
+| **Latency & queue**         | No realistic latency or priority simulation  | 50ms latency + cumulative volume queue              |
+| **Adverse selection**       | Almost non-existent                          | Fully simulated (the #1 MM risk)                    |
+| **PnL accuracy**            | Not representative                           | Precise realized + unrealized PnL with VWAP         |
+| **Speed of iteration**      | Slow (need to wait for real fills)           | Instant replay + synthetic data                     |
+| **Purpose**                 | Smoke-testing connectivity                   | **Production-like backtesting & validation**        |
+
+Testnet data differs significantly from mainnet, especially on newly launched primitives like HIP-4.
+**Real market makers** (prop firms, HFT teams) always validate strategies on **production feed** before deploying capital. This framework gives you exactly that — without risking a single dollar.
 
 ## ✨ Features
 
@@ -85,8 +106,8 @@ This prevents the #1 backtesting pitfall: **overstating fill rates on passive li
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/hyperliquid-outcomes-paper-trading.git
-cd hyperliquid-outcomes-paper-trading
+git clone https://github.com/horn111/hip4-mm-simulator.git
+cd hip4-mm-simulator
 
 # Install with Poetry
 poetry install
@@ -106,6 +127,41 @@ python main.py --trades 5000 --balance 25000 --log-level DEBUG
 
 # Run from examples
 python examples/run_simulation.py --trades 3000 --seed 123
+```
+
+### Demo Output
+
+```
+======================================================================
+  Hyperliquid Outcomes Paper Trading — Simulation
+======================================================================
+  Market:          OUTCOME-DEMO
+  Initial Balance: 10000 USDC
+  Initial Price:   0.5
+  Num Trades:      2000
+  Strategy:        InventorySkewMM
+  Latency:         50ms
+  Random Seed:     42
+======================================================================
+
+======================================================================
+  SIMULATION RESULTS
+======================================================================
+  Trades Processed:    1998
+  Fills Generated:     47
+  Final Mark Price:    0.5271
+  ---
+  USDC Balance:        9987.4200
+  YES Inventory:       23
+  Avg Entry (YES):     0.4892
+  ---
+  Realized PnL:        1.2350
+  Unrealized PnL:      0.8723
+  Total PnL:           2.1073
+======================================================================
+
+  Engine: {'total_trades_processed': 1998, 'total_fills_generated': 47}
+  OMS:    {'total_submitted': 1332, 'total_rejected': 0, 'total_cancelled': 1286}
 ```
 
 ### Run Tests
@@ -280,8 +336,13 @@ MIT License — see [LICENSE](LICENSE) for details.
 ## 🔗 Links
 
 - [Hyperliquid Documentation](https://hyperliquid.gitbook.io/)
-- [HIP-4 Specification](https://hyperliquid.gitbook.io/hyperliquid-docs/hips/hip-4)
-- [Hyperliquid Builders Program](https://builders.hyperliquid.xyz)
+- [HIP-4 Specification](https://hyperliquid.gitbook.io/hyperliquid-docs/hyperliquid-improvement-proposals-hips/hip-4-outcome-markets)
+- [Hyperliquid Builders Program Application](https://docs.google.com/forms/d/e/1FAIpQLScJ8ZueDUSQtQaiQ1-8-sgEiAoaAt-iqKAvN1o2kX5sbwlGvA/viewform)
+
+### 🏆 Grant Application
+
+This project was submitted to the Hyperliquid Builders Program (May 2026).
+Form: [Hyperliquid Builders Program](https://docs.google.com/forms/d/e/1FAIpQLScJ8ZueDUSQtQaiQ1-8-sgEiAoaAt-iqKAvN1o2kX5sbwlGvA/viewform)
 
 ---
 

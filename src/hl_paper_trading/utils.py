@@ -7,6 +7,7 @@ loader based on environment variables and TOML files.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from decimal import Decimal
@@ -43,11 +44,12 @@ def setup_logging(*, json_output: bool = False, level: str = "INFO") -> None:
             structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
         )
 
+    # Convert level name to numeric value (compatible with structlog v24+/v25+)
+    numeric_level = getattr(logging, level.upper(), logging.INFO)
+
     structlog.configure(
         processors=processors,
-        wrapper_class=structlog.make_filtering_bound_logger(
-            structlog.get_level_from_name(level)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
