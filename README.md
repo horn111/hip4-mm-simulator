@@ -353,9 +353,9 @@ This project was submitted to the Hyperliquid Builders Program (May 2026).
 
 | Phase | Deliverables | Timeline | Budget |
 |---|---|---|---|
-| Phase 2 — Live Feed | L2 book reconstruction, multi-market, settlement sim, Streamlit dashboard | 6 weeks | $15,000 |
-| Phase 3 — Advanced | Monte Carlo, fee modeling, adverse selection analytics, multi-strategy | 8 weeks | $20,000 |
-| Phase 4 — Production | Docker, monitoring, optimization framework, documentation | 4 weeks | $15,000 |
+| Phase 2 — Live Feed | L2 book reconstruction, multi-market, settlement sim, Streamlit dashboard | 8 weeks | $18,000 |
+| Phase 3 — Advanced | Monte Carlo, fee modeling, adverse selection analytics, multi-strategy | 10 weeks | $22,000 |
+| Phase 4 — Production | Docker, monitoring, optimization framework, documentation | 4 weeks | $10,000 |
 
 Form: [Hyperliquid Builders Program](https://docs.google.com/forms/d/e/1FAIpQLScJ8ZueDUSQtQaiQ1-8-sgEiAoaAt-iqKAvN1o2kX5sbwlGvA/viewform)
 
