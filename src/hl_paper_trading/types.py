@@ -1,267 +1,187 @@
-"""Domain types for the paper trading framework.
-
-All value objects are immutable Pydantic models with strict validation.
-Enumerations use ``StrEnum`` for human-readable serialisation in logs and JSON.
-
-HIP-4 Outcome Market Conventions:
-    - Prices are in the [0.0, 1.0] range (probability space).
-    - Contracts are denominated in *YES* and *NO* tokens.
-    - Settlement is 1.0 USDC per winning contract at expiry.
-"""
+"""Domain models for HIP-4 market-data and execution simulation."""
 
 from __future__ import annotations
 
-import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Optional
+from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-
-# ---------------------------------------------------------------------------
-# Enumerations
-# ---------------------------------------------------------------------------
-
-class Side(str, enum.Enum):
-    """Order / trade direction."""
-
-    BID = "BID"   # Buy YES (or sell NO – equivalent in outcome markets)
-    ASK = "ASK"   # Sell YES (or buy NO)
+OUTCOME_ASSET_BASE = 100_000_000
 
 
-class OrderStatus(str, enum.Enum):
-    """Lifecycle states of a virtual order."""
+class Side(StrEnum):
+    """Order side or aggressor direction."""
 
-    PENDING = "PENDING"          # Awaiting simulated latency window
-    OPEN = "OPEN"                # Resting in the virtual book
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderStatus(StrEnum):
+    PENDING = "PENDING"
+    OPEN = "OPEN"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
 
 
-class OrderType(str, enum.Enum):
-    """Supported order types."""
-
+class OrderType(StrEnum):
     LIMIT = "LIMIT"
-    # Future: MARKET, IOC, FOK
 
 
-class ContractType(str, enum.Enum):
-    """Outcome contract leg."""
-
-    YES = "YES"
-    NO = "NO"
-
-
-# ---------------------------------------------------------------------------
-# HIP-4 Outcome Market Asset Encoding
-# ---------------------------------------------------------------------------
-# Per the HIP-4 specification:
-#   encoding = 10 * outcome_id + side  (side: 0 = YES, 1 = NO)
-#   Outcome spot coin:  #<encoding>     (e.g. #10)
-#   Outcome token name: +<encoding>     (e.g. +10)
-#   Outcome asset ID:   100_000_000 + encoding
-#
-# See: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/asset-ids#outcomes
-# ---------------------------------------------------------------------------
-
-OUTCOME_ASSET_BASE = 100_000_000
+class RejectionReason(StrEnum):
+    BOOK_STALE = "BOOK_STALE"
+    INSUFFICIENT_BALANCE = "INSUFFICIENT_BALANCE"
+    MAX_ORDER_SIZE = "MAX_ORDER_SIZE"
+    MAX_OPEN_ORDERS = "MAX_OPEN_ORDERS"
 
 
-def outcome_encoding(outcome_id: int, side: int) -> int:
-    """Compute the HIP-4 encoding for an outcome + side pair.
-
-    Args:
-        outcome_id: The outcome identifier (e.g. 1 for BTC daily).
-        side: 0 (YES) or 1 (NO).
-
-    Returns:
-        Integer encoding used in coin/token/asset representations.
-
-    Raises:
-        ValueError: If side is not 0 or 1.
-    """
-    if side not in (0, 1):
-        raise ValueError(f"Side must be 0 (YES) or 1 (NO), got {side}")
-    return 10 * outcome_id + side
+def outcome_encoding(outcome_id: int, side_index: int) -> int:
+    """Return the HIP-4 encoding ``10 * outcome + side``."""
+    if side_index < 0:
+        raise ValueError("side_index must be non-negative")
+    return 10 * outcome_id + side_index
 
 
-def outcome_asset_id(outcome_id: int, side: int) -> int:
-    """Return the Hyperliquid asset ID for an outcome market.
-
-    Example:
-        >>> outcome_asset_id(1, 0)  # BTC daily YES
-        100000010
-    """
-    return OUTCOME_ASSET_BASE + outcome_encoding(outcome_id, side)
+def outcome_asset_id(outcome_id: int, side_index: int) -> int:
+    return OUTCOME_ASSET_BASE + outcome_encoding(outcome_id, side_index)
 
 
-def outcome_coin_name(outcome_id: int, side: int) -> str:
-    """Return the spot coin name (``#<encoding>``) for an outcome.
-
-    Example:
-        >>> outcome_coin_name(1, 0)
-        '#10'
-    """
-    return f"#{outcome_encoding(outcome_id, side)}"
+def outcome_coin_name(outcome_id: int, side_index: int) -> str:
+    return f"#{outcome_encoding(outcome_id, side_index)}"
 
 
-def outcome_token_name(outcome_id: int, side: int) -> str:
-    """Return the token name (``+<encoding>``) for an outcome.
+def outcome_token_name(outcome_id: int, side_index: int) -> str:
+    return f"+{outcome_encoding(outcome_id, side_index)}"
 
-    Example:
-        >>> outcome_token_name(1, 0)
-        '+10'
-    """
-    return f"+{outcome_encoding(outcome_id, side)}"
+
+class OutcomeToken(BaseModel):
+    """One tradeable side-token belonging to a HIP-4 outcome."""
+
+    outcome_id: int
+    side_index: int
+    label: str
+    quote_token: str
+    coin: str = ""
+    token: str = ""
+    asset_id: int = 0
+
+    model_config = {"frozen": True, "extra": "ignore"}
+
+    def model_post_init(self, __context: object) -> None:
+        object.__setattr__(
+            self,
+            "coin",
+            self.coin or outcome_coin_name(self.outcome_id, self.side_index),
+        )
+        object.__setattr__(
+            self,
+            "token",
+            self.token or outcome_token_name(self.outcome_id, self.side_index),
+        )
+        object.__setattr__(
+            self,
+            "asset_id",
+            self.asset_id or outcome_asset_id(self.outcome_id, self.side_index),
+        )
 
 
 class OutcomeMarket(BaseModel):
-    """Represents a HIP-4 outcome market with proper asset encoding.
-
-    Attributes:
-        outcome_id: Protocol-level outcome identifier.
-        name: Human-readable name (e.g. "BTC-50K-DAILY").
-        yes_asset_id: Encoded asset ID for the YES side.
-        no_asset_id: Encoded asset ID for the NO side.
-        yes_coin: Spot coin name for YES (e.g. "#10").
-        no_coin: Spot coin name for NO (e.g. "#11").
-        settlement_time_utc: Daily settlement time (e.g. "06:00").
-    """
+    """An outcome and its arbitrary set of tradeable side-tokens."""
 
     outcome_id: int
     name: str
-    yes_asset_id: int = 0
-    no_asset_id: int = 0
-    yes_coin: str = ""
-    no_coin: str = ""
-    settlement_time_utc: str = "06:00"
+    description: str = ""
+    quote_token: str
+    tokens: tuple[OutcomeToken, ...]
+    question_ids: tuple[int, ...] = ()
+    raw_metadata: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
-    model_config = {"frozen": True}
-
-    def model_post_init(self, __context: object) -> None:
-        """Auto-derive asset IDs and coin names from outcome_id."""
-        object.__setattr__(self, "yes_asset_id", outcome_asset_id(self.outcome_id, 0))
-        object.__setattr__(self, "no_asset_id", outcome_asset_id(self.outcome_id, 1))
-        object.__setattr__(self, "yes_coin", outcome_coin_name(self.outcome_id, 0))
-        object.__setattr__(self, "no_coin", outcome_coin_name(self.outcome_id, 1))
+    model_config = {"frozen": True, "extra": "ignore"}
 
 
-# ---------------------------------------------------------------------------
-# Value Objects
-# ---------------------------------------------------------------------------
+class OutcomeQuestion(BaseModel):
+    """A multi-outcome HIP-4 question from ``outcomeMeta``."""
+
+    question_id: int
+    name: str
+    description: str = ""
+    fallback_outcome: int | None = None
+    named_outcomes: tuple[int, ...] = ()
+    settled_named_outcomes: tuple[int, ...] = ()
+
+    model_config = {"frozen": True, "extra": "ignore"}
+
 
 class Order(BaseModel):
-    """Immutable representation of a virtual limit order.
-
-    Attributes:
-        order_id: Unique identifier (UUID4 hex).
-        market: Hyperliquid market symbol (e.g., ``"BTC-50K-2025"``).
-        side: BID or ASK.
-        price: Limit price in [0.0, 1.0].
-        size: Quantity of contracts (positive).
-        filled_size: Cumulative filled quantity so far.
-        status: Current lifecycle status.
-        order_type: LIMIT (only supported type for now).
-        created_at: Timestamp when the order was created.
-        activated_at: Timestamp when the order became OPEN (after latency).
-        queue_priority: Accumulated volume at this price level before this
-            order; used for queue-position simulation at equal price.
-    """
-
     order_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
-    market: str
+    coin: str
+    quote_token: str
     side: Side
     price: Decimal
     size: Decimal
     filled_size: Decimal = Decimal("0")
     status: OrderStatus = OrderStatus.PENDING
     order_type: OrderType = OrderType.LIMIT
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    activated_at: Optional[datetime] = None
-    queue_priority: Decimal = Decimal("0")
-
-    model_config = {"frozen": False}  # mutable during lifecycle
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    activated_at: datetime | None = None
+    queue_ahead: Decimal = Decimal("0")
+    rejection_reason: RejectionReason | None = None
 
     @field_validator("price")
     @classmethod
-    def _price_in_range(cls, v: Decimal) -> Decimal:
-        if not (Decimal("0") <= v <= Decimal("1")):
-            raise ValueError(f"Price must be in [0, 1], got {v}")
-        return v
+    def _price_in_range(cls, value: Decimal) -> Decimal:
+        if not Decimal("0") <= value <= Decimal("1"):
+            raise ValueError("price must be in [0, 1]")
+        return value
 
     @field_validator("size")
     @classmethod
-    def _size_positive(cls, v: Decimal) -> Decimal:
-        if v <= 0:
-            raise ValueError(f"Size must be > 0, got {v}")
-        return v
+    def _size_positive(cls, value: Decimal) -> Decimal:
+        if value <= 0:
+            raise ValueError("size must be positive")
+        return value
 
     @property
     def remaining(self) -> Decimal:
-        """Unfilled quantity."""
         return self.size - self.filled_size
 
     @property
     def is_active(self) -> bool:
-        """True if the order can still receive fills."""
-        return self.status in (OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED)
+        return self.status in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
 
 
 class Trade(BaseModel):
-    """A single trade observed on the Hyperliquid mainnet feed.
-
-    Attributes:
-        market: Market symbol.
-        price: Execution price in [0.0, 1.0].
-        size: Quantity traded.
-        side: Aggressor side (BID = buyer-initiated).
-        timestamp: Exchange timestamp (UTC).
-    """
-
-    market: str
+    coin: str
     price: Decimal
     size: Decimal
     side: Side
     timestamp: datetime
+    trade_id: str | None = None
 
     model_config = {"frozen": True}
 
 
 class Fill(BaseModel):
-    """Record of a simulated fill against a virtual order.
-
-    Attributes:
-        order_id: Parent order that was filled.
-        fill_price: Price at which the fill occurred.
-        fill_size: Quantity filled.
-        side: Inherited from the parent order.
-        timestamp: Time of fill.
-        aggressor_trade_id: Reference to the mainnet trade that triggered this.
-    """
-
+    fill_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     order_id: str
+    coin: str
+    quote_token: str
     fill_price: Decimal
+    order_price: Decimal
     fill_size: Decimal
     side: Side
     timestamp: datetime
-    aggressor_trade_id: Optional[str] = None
+    aggressor_trade_id: str | None = None
 
     model_config = {"frozen": True}
 
 
 class OrderBookLevel(BaseModel):
-    """A single price level in the order book snapshot.
-
-    Attributes:
-        price: Price level.
-        size: Aggregate size at this level.
-        count: Number of orders at this level.
-    """
-
     price: Decimal
     size: Decimal
     count: int = 1
@@ -270,66 +190,47 @@ class OrderBookLevel(BaseModel):
 
 
 class OrderBookSnapshot(BaseModel):
-    """Point-in-time order book snapshot from the exchange.
-
-    Attributes:
-        market: Market symbol.
-        bids: List of bid levels (best first, descending price).
-        asks: List of ask levels (best first, ascending price).
-        timestamp: Exchange timestamp (UTC).
-    """
-
-    market: str
-    bids: list[OrderBookLevel]
-    asks: list[OrderBookLevel]
+    coin: str
+    bids: tuple[OrderBookLevel, ...]
+    asks: tuple[OrderBookLevel, ...]
     timestamp: datetime
 
     model_config = {"frozen": True}
 
     @property
-    def best_bid(self) -> Optional[Decimal]:
+    def best_bid(self) -> Decimal | None:
         return self.bids[0].price if self.bids else None
 
     @property
-    def best_ask(self) -> Optional[Decimal]:
+    def best_ask(self) -> Decimal | None:
         return self.asks[0].price if self.asks else None
 
     @property
-    def mid_price(self) -> Optional[Decimal]:
-        if self.best_bid is not None and self.best_ask is not None:
-            return (self.best_bid + self.best_ask) / 2
-        return None
+    def mid_price(self) -> Decimal | None:
+        if self.best_bid is None or self.best_ask is None:
+            return None
+        return (self.best_bid + self.best_ask) / 2
 
     @property
-    def spread(self) -> Optional[Decimal]:
-        if self.best_bid is not None and self.best_ask is not None:
-            return self.best_ask - self.best_bid
-        return None
+    def spread(self) -> Decimal | None:
+        if self.best_bid is None or self.best_ask is None:
+            return None
+        return self.best_ask - self.best_bid
+
+    def size_at(self, side: Side, price: Decimal) -> Decimal:
+        levels = self.bids if side is Side.BUY else self.asks
+        return next(
+            (level.size for level in levels if level.price == price), Decimal("0")
+        )
 
 
 class PortfolioSnapshot(BaseModel):
-    """Snapshot of virtual portfolio state.
-
-    Attributes:
-        usdc_balance: Available USDC.
-        yes_inventory: Net YES contract inventory (negative = short).
-        no_inventory: Net NO contract inventory (negative = short).
-        avg_entry_price_yes: Volume-weighted average entry for YES.
-        avg_entry_price_no: Volume-weighted average entry for NO.
-        realized_pnl: Cumulative realised PnL in USDC.
-        unrealized_pnl: Mark-to-market unrealised PnL.
-        total_pnl: realized_pnl + unrealized_pnl.
-        timestamp: When this snapshot was taken.
-    """
-
-    usdc_balance: Decimal
-    yes_inventory: Decimal = Decimal("0")
-    no_inventory: Decimal = Decimal("0")
-    avg_entry_price_yes: Decimal = Decimal("0")
-    avg_entry_price_no: Decimal = Decimal("0")
-    realized_pnl: Decimal = Decimal("0")
-    unrealized_pnl: Decimal = Decimal("0")
-    total_pnl: Decimal = Decimal("0")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    quote_token: str
+    available_balances: dict[str, Decimal]
+    reserved_balances: dict[str, Decimal]
+    nav: Decimal
+    initial_nav: Decimal
+    pnl: Decimal
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     model_config = {"frozen": True}

@@ -1,358 +1,238 @@
-"""Pessimistic matching engine for paper trade simulation.
-
-This is the **most critical** component of the framework. It determines
-whether virtual orders would have been filled given the real trade flow
-observed on Hyperliquid mainnet.
-
-Design Philosophy — **Pessimistic Execution**:
-    Real market-making is adversarial. A paper trading engine that fills
-    every time the market touches your price will dramatically overstate
-    performance. We therefore use conservative fill rules:
-
-    1. **BID (buy) fills** only when ``trade_price < order_price``
-       (strictly below your bid — you only get filled when the market
-       trades *through* your level).
-
-    2. **ASK (sell) fills** only when ``trade_price > order_price``
-       (strictly above your ask).
-
-    3. **At-price trades** (``trade_price == order_price``) fill only
-       after the cumulative volume at that price exceeds the order's
-       queue position + size. This simulates queue priority: you sit
-       behind everyone who was there before you.
-
-This approach is standard practice at prop trading firms (Jane Street,
-Jump Trading, Citadel Securities) for backtesting market-making strategies.
-
-Volume Tracking:
-    For each (market, price) pair, we track cumulative volume traded.
-    When a virtual order is placed, it records the current volume as its
-    ``queue_priority``. At-price fills only occur when:
-        ``cumulative_volume >= queue_priority + order_size``
-"""
+"""Volume-conserving, L2-seeded matching for HIP-4 paper orders."""
 
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal
-from typing import Optional
 
-from hl_paper_trading.types import Fill, Order, OrderStatus, Side, Trade
-from hl_paper_trading.utils import get_logger
+from hl_paper_trading.types import (
+    Fill,
+    Order,
+    OrderBookSnapshot,
+    OrderStatus,
+    Side,
+    Trade,
+)
 
-logger = get_logger(__name__)
+
+class BookUnavailableError(RuntimeError):
+    """Raised when an order cannot join a fresh observed L2 book."""
+
+
+@dataclass
+class _QueueLevel:
+    external_ahead: Decimal
+    order_ids: list[str] = field(default_factory=list)
 
 
 class MatchingEngine:
-    """Pessimistic fill simulator for virtual orders against real trades.
+    """Simulate passive fills using observed L2 and aggressor trades.
 
-    The engine maintains a registry of active virtual orders and evaluates
-    each incoming trade for potential fills. Fill logic is intentionally
-    conservative to avoid over-fitting strategies to unrealistic execution.
-
-    Args:
-        market: The market symbol this engine instance handles.
-
-    Example::
-
-        engine = MatchingEngine(market="BTC-50K-2025")
-        engine.register_order(order)
-        fills = engine.process_trade(trade)
+    The model is deliberately conservative: book-size decreases never consume
+    queue. Only observed trades reduce queue-ahead, and each trade's size is
+    shared across all eligible virtual orders.
     """
 
-    def __init__(self, market: str) -> None:
-        self._market = market
-
-        # Active orders indexed by order_id for O(1) lookup
+    def __init__(
+        self,
+        coin: str,
+        quote_token: str = "USDC",
+        *,
+        book_stale_after_ms: int = 5_000,
+    ) -> None:
+        self.coin = coin
+        self.quote_token = quote_token
+        self.book_stale_after = timedelta(milliseconds=book_stale_after_ms)
+        self._book: OrderBookSnapshot | None = None
         self._orders: dict[str, Order] = {}
-
-        # Cumulative volume at each price level for queue simulation
-        # Key: Decimal price → Value: cumulative volume
-        self._volume_at_price: dict[Decimal, Decimal] = defaultdict(
-            lambda: Decimal("0")
-        )
-
-        # Statistics
-        self._total_trades_processed: int = 0
-        self._total_fills_generated: int = 0
-
-        logger.info("matching_engine.initialized", market=market)
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
+        self._levels: dict[tuple[Side, Decimal], _QueueLevel] = {}
+        self._seen_trade_ids: set[str] = set()
+        self._total_trades_processed = 0
+        self._total_fills_generated = 0
+        self._duplicates_ignored = 0
+        self._queue_volume_consumed = Decimal("0")
 
     @property
     def market(self) -> str:
-        """Market symbol this engine handles."""
-        return self._market
+        """Compatibility-shaped name for the engine's single coin."""
+        return self.coin
 
     @property
     def active_orders(self) -> list[Order]:
-        """All orders currently eligible for fills."""
-        return [o for o in self._orders.values() if o.is_active]
+        return [order for order in self._orders.values() if order.is_active]
 
     @property
     def active_order_count(self) -> int:
-        """Number of orders currently eligible for fills."""
-        return sum(1 for o in self._orders.values() if o.is_active)
+        return len(self.active_orders)
 
     @property
-    def stats(self) -> dict[str, int]:
-        """Engine statistics."""
+    def stats(self) -> dict[str, int | str]:
         return {
             "total_trades_processed": self._total_trades_processed,
             "total_fills_generated": self._total_fills_generated,
+            "duplicates_ignored": self._duplicates_ignored,
             "active_orders": self.active_order_count,
+            "queue_volume_consumed": str(self._queue_volume_consumed),
         }
 
-    # ------------------------------------------------------------------
-    # Order management
-    # ------------------------------------------------------------------
+    def process_book(self, snapshot: OrderBookSnapshot) -> None:
+        """Store the latest L2 state without treating decreases as fills."""
+        if snapshot.coin != self.coin:
+            return
+        if self._book is not None and snapshot.timestamp < self._book.timestamp:
+            return
+        self._book = snapshot
+
+        # New visible volume may be ahead of us. Decreases are ignored because
+        # they may be cancellations rather than executions.
+        for (side, price), level in self._levels.items():
+            if self._active_ids(level):
+                level.external_ahead = max(
+                    level.external_ahead, snapshot.size_at(side, price)
+                )
+                self._refresh_queue_positions(side, price)
 
     def register_order(self, order: Order) -> None:
-        """Register a new order for fill evaluation.
-
-        The order's ``queue_priority`` is set to the current cumulative
-        volume at its price level, simulating arriving at the back of
-        the queue.
-
-        Args:
-            order: The order to register. Must have status OPEN.
-
-        Raises:
-            ValueError: If the order is not OPEN or already registered.
-        """
-        if order.status != OrderStatus.OPEN:
-            raise ValueError(
-                f"Cannot register order {order.order_id} with status "
-                f"{order.status}; expected OPEN"
-            )
+        if order.status is not OrderStatus.OPEN:
+            raise ValueError("only OPEN orders can be registered")
         if order.order_id in self._orders:
-            raise ValueError(f"Order {order.order_id} is already registered")
+            raise ValueError(f"order {order.order_id} is already registered")
+        if order.coin != self.coin:
+            raise ValueError(f"order coin {order.coin} does not match {self.coin}")
+        if self._book is None or order.activated_at is None:
+            raise BookUnavailableError("no L2 snapshot is available")
+        if order.activated_at - self._book.timestamp > self.book_stale_after:
+            raise BookUnavailableError("latest L2 snapshot is stale")
 
-        # Record queue position = current volume at this price
-        order.queue_priority = self._volume_at_price[order.price]
-
+        key = (order.side, order.price)
+        level = self._levels.get(key)
+        if level is None or not self._active_ids(level):
+            level = _QueueLevel(self._book.size_at(order.side, order.price))
+            self._levels[key] = level
+        level.order_ids.append(order.order_id)
         self._orders[order.order_id] = order
-        logger.debug(
-            "matching_engine.order_registered",
-            order_id=order.order_id,
-            side=order.side.value,
-            price=str(order.price),
-            size=str(order.size),
-            queue_priority=str(order.queue_priority),
-        )
+        self._refresh_queue_positions(*key)
 
-    def cancel_order(self, order_id: str) -> Optional[Order]:
-        """Cancel a registered order.
-
-        Args:
-            order_id: The order to cancel.
-
-        Returns:
-            The cancelled order, or None if not found.
-        """
+    def cancel_order(self, order_id: str) -> Order | None:
         order = self._orders.get(order_id)
-        if order is None:
-            logger.warning(
-                "matching_engine.cancel_not_found", order_id=order_id
-            )
+        if order is None or not order.is_active:
             return None
-
         order.status = OrderStatus.CANCELLED
-        logger.info(
-            "matching_engine.order_cancelled",
-            order_id=order_id,
-            filled_size=str(order.filled_size),
-        )
+        self._refresh_queue_positions(order.side, order.price)
         return order
 
-    # ------------------------------------------------------------------
-    # Trade processing — the core pessimistic logic
-    # ------------------------------------------------------------------
-
     def process_trade(self, trade: Trade) -> list[Fill]:
-        """Evaluate a mainnet trade against all active virtual orders.
-
-        This is the hot path. For each active order, we check:
-
-        - **BID orders**: fill if ``trade.price < order.price``
-          (strict improvement) OR if ``trade.price == order.price``
-          AND sufficient queue volume has been consumed.
-
-        - **ASK orders**: fill if ``trade.price > order.price``
-          (strict improvement) OR if ``trade.price == order.price``
-          AND sufficient queue volume has been consumed.
-
-        Args:
-            trade: A real trade from the Hyperliquid mainnet feed.
-
-        Returns:
-            List of generated ``Fill`` objects (may be empty).
-        """
-        if trade.market != self._market:
+        if trade.coin != self.coin:
             return []
+        if trade.trade_id and trade.trade_id in self._seen_trade_ids:
+            self._duplicates_ignored += 1
+            return []
+        if trade.trade_id:
+            self._seen_trade_ids.add(trade.trade_id)
 
         self._total_trades_processed += 1
-
-        # Update cumulative volume at this price level
-        self._volume_at_price[trade.price] += trade.size
-
+        passive_side = Side.SELL if trade.side is Side.BUY else Side.BUY
+        prices = self._eligible_prices(passive_side, trade.price)
+        remaining_volume = trade.size
         fills: list[Fill] = []
 
-        for order in list(self._orders.values()):
-            if not order.is_active:
+        for price in prices:
+            if remaining_volume <= 0:
+                break
+            key = (passive_side, price)
+            level = self._levels[key]
+            active_ids = self._active_ids(level)
+            if not active_ids:
                 continue
 
-            fill = self._try_fill(order, trade)
-            if fill is not None:
-                fills.append(fill)
-
-        if fills:
-            self._total_fills_generated += len(fills)
-            logger.info(
-                "matching_engine.fills_generated",
-                trade_price=str(trade.price),
-                trade_size=str(trade.size),
-                fill_count=len(fills),
+            is_trade_through = (passive_side is Side.BUY and price > trade.price) or (
+                passive_side is Side.SELL and price < trade.price
             )
+            if is_trade_through:
+                level.external_ahead = Decimal("0")
+            else:
+                queue_consumed = min(level.external_ahead, remaining_volume)
+                level.external_ahead -= queue_consumed
+                remaining_volume -= queue_consumed
+                self._queue_volume_consumed += queue_consumed
 
+            for order_id in active_ids:
+                if remaining_volume <= 0:
+                    break
+                order = self._orders[order_id]
+                fill_size = min(order.remaining, remaining_volume)
+                if fill_size <= 0:
+                    continue
+                order.filled_size += fill_size
+                order.status = (
+                    OrderStatus.FILLED
+                    if order.remaining == 0
+                    else OrderStatus.PARTIALLY_FILLED
+                )
+                fills.append(
+                    Fill(
+                        order_id=order.order_id,
+                        coin=order.coin,
+                        quote_token=order.quote_token,
+                        fill_price=order.price,
+                        order_price=order.price,
+                        fill_size=fill_size,
+                        side=order.side,
+                        timestamp=trade.timestamp,
+                        aggressor_trade_id=trade.trade_id,
+                    )
+                )
+                remaining_volume -= fill_size
+
+            self._refresh_queue_positions(*key)
+
+        self._total_fills_generated += len(fills)
         return fills
 
-    def _try_fill(self, order: Order, trade: Trade) -> Optional[Fill]:
-        """Attempt to fill a single order against a trade.
-
-        Implements the three-rule pessimistic model:
-            1. Strict price improvement → immediate full/partial fill.
-            2. At-price → fill only after queue is consumed.
-            3. Worse price → no fill.
-
-        Args:
-            order: The virtual order to evaluate.
-            trade: The incoming mainnet trade.
-
-        Returns:
-            A ``Fill`` if execution conditions are met, else None.
-        """
-        should_fill = False
-        is_at_price = trade.price == order.price
-
-        if order.side == Side.BID:
-            # BID fills when market trades BELOW our bid
-            if trade.price < order.price:
-                should_fill = True
-            elif is_at_price:
-                should_fill = self._check_queue_fill(order, trade)
-
-        elif order.side == Side.ASK:
-            # ASK fills when market trades ABOVE our ask
-            if trade.price > order.price:
-                should_fill = True
-            elif is_at_price:
-                should_fill = self._check_queue_fill(order, trade)
-
-        if not should_fill:
-            return None
-
-        return self._execute_fill(order, trade)
-
-    def _check_queue_fill(self, order: Order, trade: Trade) -> bool:
-        """Check if an at-price trade has consumed enough queue volume.
-
-        The order fills when the cumulative volume traded at this price
-        exceeds the order's queue position plus its remaining size.
-        This means everyone ahead in the queue must be filled first.
-
-        Args:
-            order: The order being evaluated.
-            trade: The current trade (at the order's price).
-
-        Returns:
-            True if sufficient volume has been consumed.
-        """
-        cumulative = self._volume_at_price[order.price]
-        threshold = order.queue_priority + order.remaining
-        return cumulative >= threshold
-
-    def _execute_fill(self, order: Order, trade: Trade) -> Fill:
-        """Execute a fill: update order state and return Fill record.
-
-        The fill quantity is the minimum of the order's remaining size
-        and the trade's size (partial fills are supported).
-
-        Args:
-            order: The order being filled.
-            trade: The trade that triggered the fill.
-
-        Returns:
-            A ``Fill`` record.
-        """
-        fill_size = min(order.remaining, trade.size)
-
-        order.filled_size += fill_size
-        if order.filled_size >= order.size:
-            order.status = OrderStatus.FILLED
-        else:
-            order.status = OrderStatus.PARTIALLY_FILLED
-
-        fill = Fill(
-            order_id=order.order_id,
-            fill_price=order.price,  # Fill at the limit price, not trade price
-            fill_size=fill_size,
-            side=order.side,
-            timestamp=trade.timestamp,
-        )
-
-        logger.debug(
-            "matching_engine.fill_executed",
-            order_id=order.order_id,
-            fill_price=str(fill.fill_price),
-            fill_size=str(fill.fill_size),
-            order_status=order.status.value,
-            remaining=str(order.remaining),
-        )
-
-        return fill
-
-    # ------------------------------------------------------------------
-    # Housekeeping
-    # ------------------------------------------------------------------
-
     def purge_inactive(self) -> int:
-        """Remove filled and cancelled orders from the registry.
-
-        Returns:
-            Number of orders purged.
-        """
-        inactive_ids = [
-            oid for oid, o in self._orders.items() if not o.is_active
-        ]
-        for oid in inactive_ids:
-            del self._orders[oid]
-
-        if inactive_ids:
-            logger.debug(
-                "matching_engine.purged", count=len(inactive_ids)
-            )
-        return len(inactive_ids)
-
-    def get_volume_at_price(self, price: Decimal) -> Decimal:
-        """Return cumulative volume traded at a specific price level.
-
-        Args:
-            price: The price level to query.
-
-        Returns:
-            Cumulative volume.
-        """
-        return self._volume_at_price.get(price, Decimal("0"))
+        inactive = [oid for oid, order in self._orders.items() if not order.is_active]
+        for order_id in inactive:
+            order = self._orders.pop(order_id)
+            self._refresh_queue_positions(order.side, order.price)
+        return len(inactive)
 
     def reset(self) -> None:
-        """Reset the engine to a clean state."""
+        self._book = None
         self._orders.clear()
-        self._volume_at_price.clear()
+        self._levels.clear()
+        self._seen_trade_ids.clear()
         self._total_trades_processed = 0
         self._total_fills_generated = 0
-        logger.info("matching_engine.reset", market=self._market)
+        self._duplicates_ignored = 0
+        self._queue_volume_consumed = Decimal("0")
+
+    def _eligible_prices(self, side: Side, trade_price: Decimal) -> list[Decimal]:
+        prices = {
+            price
+            for (level_side, price), level in self._levels.items()
+            if level_side is side
+            and self._active_ids(level)
+            and (
+                (side is Side.BUY and price >= trade_price)
+                or (side is Side.SELL and price <= trade_price)
+            )
+        }
+        return sorted(prices, reverse=side is Side.BUY)
+
+    def _active_ids(self, level: _QueueLevel) -> list[str]:
+        return [
+            order_id
+            for order_id in level.order_ids
+            if order_id in self._orders and self._orders[order_id].is_active
+        ]
+
+    def _refresh_queue_positions(self, side: Side, price: Decimal) -> None:
+        level = self._levels.get((side, price))
+        if level is None:
+            return
+        ahead = level.external_ahead
+        for order_id in self._active_ids(level):
+            order = self._orders[order_id]
+            order.queue_ahead = ahead
+            ahead += order.remaining

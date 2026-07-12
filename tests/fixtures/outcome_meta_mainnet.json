@@ -1,0 +1,29 @@
+{
+  "outcomes": [
+    {
+      "outcome": 778,
+      "name": "World Cup Quarterfinal: Norway vs England",
+      "description": "metadata=category:sports|subCategory:football",
+      "sideSpecs": [{"name": "Norway"}, {"name": "England"}],
+      "quoteToken": "USDC",
+      "futureField": "ignored"
+    },
+    {
+      "outcome": 805,
+      "name": "Recurring",
+      "description": "class:priceBinary|underlying:BTC|expiry:20260712-0600",
+      "sideSpecs": [{"name": "Yes"}, {"name": "No"}],
+      "quoteToken": "USDC"
+    }
+  ],
+  "questions": [
+    {
+      "question": 141,
+      "name": "Recurring",
+      "description": "class:priceBucket",
+      "fallbackOutcome": 809,
+      "namedOutcomes": [805],
+      "settledNamedOutcomes": []
+    }
+  ]
+}

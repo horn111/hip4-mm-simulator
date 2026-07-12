@@ -24,8 +24,20 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pydantic structlog pytest pytest-asyncio pytest-cov
+          pip install -e ".[live]"
+          pip install pytest pytest-cov ruff mypy
 
-      - name: Run tests
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: mypy src
+
+      - name: Run tests with coverage gate
         run: |
-          PYTHONPATH=src pytest tests/ -v --tb=short --cov=hl_paper_trading --cov-report=term-missing
+          pytest
+
+      - name: Build package
+        run: |
+          pip install build
+          python -m build

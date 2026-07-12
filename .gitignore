@@ -32,6 +32,14 @@ htmlcov/
 # Logs
 *.log
 
+# Large local mainnet recordings (publish only hashes/reports)
+data/recordings/
+
+# Local launch/grant drafts; keep these out of published git history.
+docs/ANNOUNCEMENT.md
+docs/GRANT_APPLICATION_V2.md
+docs/OUTREACH.md
+
 # Environment
 .env
 .env.local

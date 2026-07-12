@@ -1,0 +1,12 @@
+{
+  "outcomes": [
+    {
+      "outcome": 42,
+      "name": "Test outcome",
+      "description": "fixture",
+      "sideSpecs": [{"name": "Alpha"}, {"name": "Beta"}, {"name": "Draw"}],
+      "quoteToken": "USDH"
+    }
+  ],
+  "questions": []
+}

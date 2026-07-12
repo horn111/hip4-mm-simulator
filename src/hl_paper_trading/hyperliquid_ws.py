@@ -1,312 +1,274 @@
-"""Real-time Hyperliquid mainnet WebSocket connector for outcome markets.
-
-This module provides a read-only WebSocket client that subscribes to
-real trades and order book updates from Hyperliquid's mainnet API.
-It converts raw exchange messages into framework-native ``Trade`` and
-``OrderBookSnapshot`` objects for consumption by the paper trading engine.
-
-Usage::
-
-    from hl_paper_trading.hyperliquid_ws import HyperliquidWS
-
-    ws = HyperliquidWS(outcome_id=1)  # BTC daily outcome
-
-    async for event in ws.stream():
-        if isinstance(event, Trade):
-            fills = engine.process_trade(event)
-        elif isinstance(event, OrderBookSnapshot):
-            strategy.on_orderbook_update(event)
-
-WebSocket endpoint:
-    - Mainnet: ``wss://api.hyperliquid.xyz/ws``
-    - Testnet: ``wss://api.hyperliquid-testnet.xyz/ws``
-
-HIP-4 Asset Encoding:
-    Outcome trades use ``#<encoding>`` coin format where
-    ``encoding = 10 * outcome_id + side`` (side 0 = YES, side 1 = NO).
-
-See: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket
-"""
+"""HIP-4 metadata discovery and read-only WebSocket market data."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import AsyncIterator, Optional, Union
-
-import structlog
+from typing import Any
 
 from hl_paper_trading.types import (
     OrderBookLevel,
     OrderBookSnapshot,
+    OutcomeMarket,
+    OutcomeQuestion,
+    OutcomeToken,
     Side,
     Trade,
-    outcome_coin_name,
 )
 
-logger = structlog.get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
+MAINNET_API = "https://api.hyperliquid.xyz"
+TESTNET_API = "https://api.hyperliquid-testnet.xyz"
 MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
 TESTNET_WS = "wss://api.hyperliquid-testnet.xyz/ws"
 
-# Reconnection parameters
-MAX_RECONNECT_ATTEMPTS = 10
-RECONNECT_BASE_DELAY_S = 1.0
-RECONNECT_MAX_DELAY_S = 60.0
 
+class HyperliquidInfo:
+    """Read and parse the official ``outcomeMeta`` response."""
 
-# ---------------------------------------------------------------------------
-# HyperliquidWS
-# ---------------------------------------------------------------------------
+    def __init__(self, *, testnet: bool = False) -> None:
+        self.base_url = TESTNET_API if testnet else MAINNET_API
+
+    async def discover_outcomes(self) -> list[OutcomeMarket]:
+        try:
+            import aiohttp
+        except ImportError as exc:  # pragma: no cover - exercised in smoke usage
+            raise ImportError("install hip4-mm-simulator[live] for discovery") from exc
+        async with (
+            aiohttp.ClientSession() as session,
+            session.post(
+                f"{self.base_url}/info", json={"type": "outcomeMeta"}
+            ) as response,
+        ):
+            response.raise_for_status()
+            payload = await response.json()
+        markets, _ = self.parse_outcome_meta(payload)
+        return markets
+
+    @staticmethod
+    def parse_outcome_meta(
+        payload: dict[str, Any],
+    ) -> tuple[list[OutcomeMarket], list[OutcomeQuestion]]:
+        raw_questions = payload.get("questions", [])
+        questions = [
+            OutcomeQuestion(
+                question_id=int(item["question"]),
+                name=str(item.get("name", "")),
+                description=str(item.get("description", "")),
+                fallback_outcome=(
+                    int(item["fallbackOutcome"])
+                    if item.get("fallbackOutcome") is not None
+                    else None
+                ),
+                named_outcomes=tuple(
+                    int(value) for value in item.get("namedOutcomes", [])
+                ),
+                settled_named_outcomes=tuple(
+                    int(value) for value in item.get("settledNamedOutcomes", [])
+                ),
+            )
+            for item in raw_questions
+            if isinstance(item, dict) and item.get("question") is not None
+        ]
+
+        market_questions: dict[int, list[int]] = {}
+        for question in questions:
+            outcome_ids = list(question.named_outcomes) + list(
+                question.settled_named_outcomes
+            )
+            if question.fallback_outcome is not None:
+                outcome_ids.append(question.fallback_outcome)
+            for outcome_id in outcome_ids:
+                market_questions.setdefault(outcome_id, []).append(question.question_id)
+
+        markets: list[OutcomeMarket] = []
+        for item in payload.get("outcomes", []):
+            if not isinstance(item, dict) or item.get("outcome") is None:
+                continue
+            outcome_id = int(item["outcome"])
+            quote_token = str(item.get("quoteToken", "USDC"))
+            side_specs = item.get("sideSpecs", [])
+            tokens = tuple(
+                OutcomeToken(
+                    outcome_id=outcome_id,
+                    side_index=index,
+                    label=str(spec.get("name", f"Side {index}")),
+                    quote_token=quote_token,
+                )
+                for index, spec in enumerate(side_specs)
+                if isinstance(spec, dict)
+            )
+            markets.append(
+                OutcomeMarket(
+                    outcome_id=outcome_id,
+                    name=str(item.get("name", f"Outcome {outcome_id}")),
+                    description=str(item.get("description", "")),
+                    quote_token=quote_token,
+                    tokens=tokens,
+                    question_ids=tuple(market_questions.get(outcome_id, [])),
+                    raw_metadata=dict(item),
+                )
+            )
+        return markets, questions
+
 
 class HyperliquidWS:
-    """Read-only WebSocket client for Hyperliquid outcome market data.
-
-    Subscribes to trades and L2 book updates for a specific HIP-4 outcome
-    market and yields framework-native ``Trade`` / ``OrderBookSnapshot``
-    objects.
-
-    Args:
-        outcome_id: The HIP-4 outcome identifier (e.g. 1 for BTC daily).
-        side: Which side to subscribe (0 = YES, 1 = NO, None = both).
-        testnet: If True, connect to testnet instead of mainnet.
-        subscribe_trades: Subscribe to trade feed.
-        subscribe_l2: Subscribe to L2 order book snapshots.
-
-    Example::
-
-        ws = HyperliquidWS(outcome_id=1, side=0)  # YES side of BTC daily
-
-        async for event in ws.stream():
-            print(event)
-    """
+    """Stream trades and L2 snapshots for one explicit HIP-4 token."""
 
     def __init__(
         self,
-        outcome_id: int = 1,
-        side: Optional[int] = 0,
+        token: OutcomeToken | None = None,
         *,
+        coin: str | None = None,
+        quote_token: str = "USDC",
         testnet: bool = False,
         subscribe_trades: bool = True,
         subscribe_l2: bool = True,
     ) -> None:
-        self.outcome_id = outcome_id
-        self.sides = [side] if side is not None else [0, 1]
+        if token is None and coin is None:
+            raise ValueError(
+                "token or coin is required; there is no default HIP-4 market"
+            )
+        if token is not None and coin is not None and token.coin != coin:
+            raise ValueError("token.coin and coin disagree")
+        self.token = token
+        self.coin = token.coin if token is not None else str(coin)
+        self.quote_token = token.quote_token if token is not None else quote_token
         self.url = TESTNET_WS if testnet else MAINNET_WS
         self.subscribe_trades = subscribe_trades
         self.subscribe_l2 = subscribe_l2
-
-        # Derive coin names from HIP-4 encoding
-        self.coins = [
-            outcome_coin_name(outcome_id, s) for s in self.sides
-        ]
-
-        self._ws = None
+        self._ws: Any = None
         self._running = False
 
-        logger.info(
-            "hyperliquid_ws.init",
-            outcome_id=outcome_id,
-            coins=self.coins,
-            url=self.url,
-        )
-
-    # -- Subscription messages -----------------------------------------------
-
-    def _build_subscriptions(self) -> list[dict]:
-        """Build WebSocket subscription messages per Hyperliquid API spec."""
-        subs: list[dict] = []
-
-        for coin in self.coins:
-            if self.subscribe_trades:
-                subs.append({
+    def _build_subscriptions(self) -> list[dict[str, Any]]:
+        subscriptions: list[dict[str, Any]] = []
+        if self.subscribe_trades:
+            subscriptions.append(
+                {
                     "method": "subscribe",
-                    "subscription": {
-                        "type": "trades",
-                        "coin": coin,
-                    },
-                })
-
-            if self.subscribe_l2:
-                subs.append({
+                    "subscription": {"type": "trades", "coin": self.coin},
+                }
+            )
+        if self.subscribe_l2:
+            subscriptions.append(
+                {
                     "method": "subscribe",
-                    "subscription": {
-                        "type": "l2Book",
-                        "coin": coin,
-                    },
-                })
-
-        return subs
-
-    # -- Message parsing -----------------------------------------------------
+                    "subscription": {"type": "l2Book", "coin": self.coin},
+                }
+            )
+        return subscriptions
 
     @staticmethod
-    def _parse_trade(raw: dict, coin: str) -> list[Trade]:
-        """Parse a trades channel message into framework Trade objects."""
+    def _parse_trade(raw: Any, fallback_coin: str) -> list[Trade]:
+        rows: list[Any]
+        if isinstance(raw, list):
+            rows = raw
+        elif isinstance(raw, dict) and isinstance(raw.get("data"), list):
+            rows = raw["data"]
+        elif isinstance(raw, dict):
+            rows = [raw]
+        else:
+            return []
         trades: list[Trade] = []
-
-        for t in raw.get("data", []):
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
             try:
-                trade = Trade(
-                    market=coin,
-                    price=Decimal(str(t["px"])),
-                    size=Decimal(str(t["sz"])),
-                    side=Side.BID if t.get("side", "B") == "B" else Side.ASK,
-                    timestamp=datetime.fromtimestamp(
-                        t.get("time", 0) / 1000, tz=timezone.utc
-                    ) if "time" in t else datetime.now(timezone.utc),
+                timestamp_ms = int(item.get("time", 0))
+                trade_id = item.get("tid") or item.get("hash")
+                trades.append(
+                    Trade(
+                        coin=str(item.get("coin", fallback_coin)),
+                        price=Decimal(str(item["px"])),
+                        size=Decimal(str(item["sz"])),
+                        side=Side.BUY if item.get("side") == "B" else Side.SELL,
+                        timestamp=(
+                            datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+                            if timestamp_ms
+                            else datetime.now(UTC)
+                        ),
+                        trade_id=str(trade_id) if trade_id is not None else None,
+                    )
                 )
-                trades.append(trade)
-            except (KeyError, ValueError) as exc:
-                logger.warning("trade_parse_error", error=str(exc), raw=t)
-
+            except (KeyError, TypeError, ValueError):
+                continue
         return trades
 
     @staticmethod
-    def _parse_l2_book(raw: dict, coin: str) -> Optional[OrderBookSnapshot]:
-        """Parse an l2Book channel message into an OrderBookSnapshot."""
+    def _parse_l2_book(raw: Any, fallback_coin: str) -> OrderBookSnapshot | None:
+        if not isinstance(raw, dict):
+            return None
+        data = raw.get("data", raw)
+        if not isinstance(data, dict):
+            return None
+        levels = data.get("levels")
+        if not isinstance(levels, list) or len(levels) < 2:
+            return None
         try:
-            book = raw.get("data", {}).get("levels", [[], []])
-            bids = [
-                OrderBookLevel(
-                    price=Decimal(str(lvl["px"])),
-                    size=Decimal(str(lvl["sz"])),
-                    count=int(lvl.get("n", 1)),
-                )
-                for lvl in book[0]
-            ]
-            asks = [
-                OrderBookLevel(
-                    price=Decimal(str(lvl["px"])),
-                    size=Decimal(str(lvl["sz"])),
-                    count=int(lvl.get("n", 1)),
-                )
-                for lvl in book[1]
-            ]
+            timestamp_ms = int(data.get("time", 0))
             return OrderBookSnapshot(
-                market=coin,
-                bids=bids,
-                asks=asks,
-                timestamp=datetime.now(timezone.utc),
+                coin=str(data.get("coin", fallback_coin)),
+                bids=tuple(
+                    OrderBookLevel(
+                        price=Decimal(str(level["px"])),
+                        size=Decimal(str(level["sz"])),
+                        count=int(level.get("n", 1)),
+                    )
+                    for level in levels[0]
+                ),
+                asks=tuple(
+                    OrderBookLevel(
+                        price=Decimal(str(level["px"])),
+                        size=Decimal(str(level["sz"])),
+                        count=int(level.get("n", 1)),
+                    )
+                    for level in levels[1]
+                ),
+                timestamp=(
+                    datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+                    if timestamp_ms
+                    else datetime.now(UTC)
+                ),
             )
-        except (KeyError, ValueError, IndexError) as exc:
-            logger.warning("l2_parse_error", error=str(exc))
+        except (KeyError, TypeError, ValueError):
             return None
 
-    # -- Streaming -----------------------------------------------------------
-
-    async def stream(self) -> AsyncIterator[Union[Trade, OrderBookSnapshot]]:
-        """Connect to Hyperliquid WebSocket and yield parsed events.
-
-        Automatically reconnects on disconnection with exponential backoff.
-
-        Yields:
-            Trade or OrderBookSnapshot objects as they arrive.
-
-        Raises:
-            ImportError: If ``websockets`` is not installed.
-        """
+    async def stream(self) -> AsyncIterator[Trade | OrderBookSnapshot]:
         try:
-            import websockets  # type: ignore[import-untyped]
-        except ImportError:
-            raise ImportError(
-                "The 'websockets' package is required for live data. "
-                "Install it with: pip install websockets>=12.0\n"
-                "Or install the live extras: pip install hl-paper-trading[live]"
-            )
-
+            import websockets
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError("install hip4-mm-simulator[live] for streaming") from exc
         self._running = True
         attempt = 0
-
-        while self._running and attempt < MAX_RECONNECT_ATTEMPTS:
+        while self._running and attempt < 10:
             try:
-                logger.info(
-                    "ws.connecting",
-                    url=self.url,
-                    attempt=attempt + 1,
-                    coins=self.coins,
-                )
-
-                async with websockets.connect(self.url) as ws:
-                    self._ws = ws
-                    attempt = 0  # reset on successful connection
-
-                    # Send subscriptions
-                    for sub in self._build_subscriptions():
-                        await ws.send(json.dumps(sub))
-                        logger.debug("ws.subscribed", subscription=sub)
-
-                    # Process messages
-                    async for raw_msg in ws:
-                        try:
-                            msg = json.loads(raw_msg)
-                        except json.JSONDecodeError:
-                            continue
-
-                        channel = msg.get("channel", "")
-                        data = msg.get("data", {})
-
+                async with websockets.connect(self.url) as websocket:
+                    self._ws = websocket
+                    attempt = 0
+                    for subscription in self._build_subscriptions():
+                        await websocket.send(json.dumps(subscription))
+                    async for message in websocket:
+                        payload = json.loads(message)
+                        channel = payload.get("channel")
+                        data = payload.get("data")
                         if channel == "trades":
-                            coin = data.get("coin", self.coins[0]) if isinstance(data, dict) else self.coins[0]
-                            # Trades data may be at top level or nested
-                            trade_data = data if isinstance(data, dict) else {"data": data}
-                            for trade in self._parse_trade(trade_data, coin):
+                            for trade in self._parse_trade(data, self.coin):
                                 yield trade
-
                         elif channel == "l2Book":
-                            coin = data.get("coin", self.coins[0]) if isinstance(data, dict) else self.coins[0]
-                            snapshot = self._parse_l2_book(
-                                {"data": data} if isinstance(data, dict) else data,
-                                coin,
-                            )
-                            if snapshot:
+                            snapshot = self._parse_l2_book(data, self.coin)
+                            if snapshot is not None:
                                 yield snapshot
-
-                        elif channel == "subscriptionResponse":
-                            logger.info("ws.subscription_confirmed", data=data)
-
-            except Exception as exc:
+            except asyncio.CancelledError:
+                raise
+            except Exception:
                 attempt += 1
-                delay = min(
-                    RECONNECT_BASE_DELAY_S * (2 ** (attempt - 1)),
-                    RECONNECT_MAX_DELAY_S,
-                )
-                logger.warning(
-                    "ws.disconnected",
-                    error=str(exc),
-                    reconnect_in_s=delay,
-                    attempt=attempt,
-                )
-                await asyncio.sleep(delay)
+                await asyncio.sleep(min(2 ** (attempt - 1), 60))
             finally:
                 self._ws = None
 
-        if attempt >= MAX_RECONNECT_ATTEMPTS:
-            logger.error("ws.max_reconnects_exceeded")
-
     async def close(self) -> None:
-        """Gracefully close the WebSocket connection."""
         self._running = False
-        if self._ws:
+        if self._ws is not None:
             await self._ws.close()
-            logger.info("ws.closed")
-"""Hyperliquid Outcomes Paper Trading Framework.
-
-A production-ready paper trading engine for Hyperliquid HIP-4 outcome markets
-(0.0–1.0 binary contracts). Enables market-makers to backtest and forward-test
-strategies on real mainnet WebSocket data without risking capital.
-
-Modules:
-    types       – Domain value objects and enumerations.
-    virtual_wallet – Portfolio accounting (USDC, YES/NO inventory, PnL).
-    virtual_oms    – Order Management System with latency simulation.
-    matching_engine – Pessimistic fill simulator against live trades.
-    strategy       – Base class for Bring-Your-Own-Logic strategies.
-    utils          – Shared helpers (logging bootstrap, config loading).
-"""
