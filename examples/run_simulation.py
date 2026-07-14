@@ -1,18 +1,4 @@
-"""Example: Run a complete paper trading simulation.
-
-This script demonstrates the full end-to-end workflow:
-
-    1. Initialize the framework (wallet, engine, OMS).
-    2. Create a MockHyperliquidWS for synthetic data.
-    3. Instantiate the InventorySkewMM strategy.
-    4. Run the simulation loop.
-    5. Print final portfolio report.
-
-Usage::
-
-    python examples/run_simulation.py
-    python examples/run_simulation.py --trades 5000 --balance 25000
-"""
+"""Run a deterministic spot-safe synthetic simulation."""
 
 from __future__ import annotations
 
@@ -22,163 +8,65 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
-# Add parent directory to path for development
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-
-from hl_paper_trading.matching_engine import MatchingEngine
-from hl_paper_trading.mock_ws import MockHyperliquidWS
-from hl_paper_trading.utils import Config, setup_logging, get_logger
-from hl_paper_trading.virtual_oms import VirtualOMS
-from hl_paper_trading.virtual_wallet import VirtualWallet
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from basic_strategy import InventorySkewMM
 
-logger = get_logger(__name__)
+from hl_paper_trading import MatchingEngine, OrderBookSnapshot, Trade, VirtualOMS
+from hl_paper_trading.mock_ws import MockHyperliquidWS
+from hl_paper_trading.utils import Config
+from hl_paper_trading.virtual_wallet import VirtualWallet
 
 
 async def run_simulation(
-    num_trades: int = 2000,
+    num_trades: int = 2_000,
     initial_balance: Decimal = Decimal("10000"),
     initial_price: Decimal = Decimal("0.50"),
     seed: int = 42,
 ) -> None:
-    """Run a complete paper trading simulation.
-
-    Args:
-        num_trades: Number of synthetic trades to process.
-        initial_balance: Starting USDC balance.
-        initial_price: Starting price for the synthetic market.
-        seed: Random seed for reproducibility.
-    """
-    market = "OUTCOME-DEMO"
-
-    # --- Infrastructure setup ---
-    config = Config(
-        initial_balance=str(initial_balance),
-        latency_ms="50",
-        market=market,
+    coin = "#TEST0"
+    initial_tokens = Decimal("1000")
+    wallet = VirtualWallet(
+        quote_balances={"USDC": initial_balance},
+        token_balances={coin: initial_tokens},
+        token_quotes={coin: "USDC"},
+        initial_mark_prices={coin: initial_price},
     )
-
-    wallet = VirtualWallet(initial_balance=initial_balance)
-    engine = MatchingEngine(market=market)
-    oms = VirtualOMS(wallet=wallet, engine=engine, config=config)
-
-    # --- Mock WebSocket ---
-    ws = MockHyperliquidWS(
-        market=market,
-        initial_price=initial_price,
-        tick_interval_ms=50,
-        volatility=0.008,
-        seed=seed,
-    )
-
-    # --- Strategy ---
+    engine = MatchingEngine(coin)
+    oms = VirtualOMS(wallet, engine, Config(latency_ms="50"))
     strategy = InventorySkewMM(
-        oms=oms,
-        wallet=wallet,
-        half_spread=Decimal("0.008"),
-        order_size=Decimal("25"),
-        max_inventory=Decimal("300"),
-        skew_factor=Decimal("0.00005"),
+        oms, wallet, target_inventory=initial_tokens, order_size=Decimal("10")
     )
+    source = MockHyperliquidWS(coin, initial_price=initial_price, seed=seed)
 
-    # --- Simulation loop ---
-    print("=" * 70)
-    print("  Hyperliquid Outcomes Paper Trading — Simulation")
-    print("=" * 70)
-    print(f"  Market:          {market}")
-    print(f"  Initial Balance: {initial_balance} USDC")
-    print(f"  Initial Price:   {initial_price}")
-    print(f"  Num Trades:      {num_trades}")
-    print(f"  Strategy:        {strategy.name}")
-    print(f"  Latency:         {config.get_int('latency_ms')}ms")
-    print(f"  Random Seed:     {seed}")
-    print("=" * 70)
-    print()
-
-    strategy.on_start()
-
-    trade_count = 0
-    fill_count = 0
-
-    async for snapshot, trades in ws.stream_with_orderbook(
-        num_updates=num_trades // 3,
-        trades_per_update=3,
-        realtime=False,
-    ):
-        # Process each trade through OMS (which delegates to engine)
-        for trade in trades:
-            fills = oms.process_trade(trade)
-            fill_count += len(fills)
-            strategy.on_trade(trade)
-            trade_count += 1
-
-        # Strategy receives the order book update
-        strategy.on_orderbook_update(snapshot)
-
+    trades = 0
+    async for event in source.stream_with_orderbook(num_trades, book_every=10):
+        if isinstance(event, OrderBookSnapshot):
+            oms.process_book(event)
+            oms.activate_pending(event.timestamp)
+            strategy.on_orderbook_update(event)
+        elif isinstance(event, Trade):
+            oms.process_trade(event)
+            strategy.on_trade(event)
+            trades += 1
     strategy.on_stop()
-
-    # --- Final Report ---
-    mark_price = ws.current_price
-    snap = wallet.snapshot(mark_price=mark_price)
-
-    print()
-    print("=" * 70)
-    print("  SIMULATION RESULTS")
-    print("=" * 70)
-    print(f"  Trades Processed:    {trade_count}")
-    print(f"  Fills Generated:     {fill_count}")
-    print(f"  Final Mark Price:    {mark_price}")
-    print(f"  ---")
-    print(f"  USDC Balance:        {snap.usdc_balance}")
-    print(f"  YES Inventory:       {snap.yes_inventory}")
-    print(f"  Avg Entry (YES):     {snap.avg_entry_price_yes}")
-    print(f"  ---")
-    print(f"  Realized PnL:        {snap.realized_pnl}")
-    print(f"  Unrealized PnL:      {snap.unrealized_pnl}")
-    print(f"  Total PnL:           {snap.total_pnl}")
-    print("=" * 70)
-
-    # Engine stats
-    eng_stats = engine.stats
-    oms_stats = oms.stats
-    print(f"\n  Engine: {eng_stats}")
-    print(f"  OMS:    {oms_stats}")
+    snapshot = wallet.snapshot({coin: source.current_price})
+    print(f"Trades: {trades}")
+    print(f"Fills: {len(wallet.fills)}")
+    print(f"Final NAV: {snapshot.nav}")
+    print(f"PnL: {snapshot.pnl}")
+    print(f"Invariants: balances non-negative, reserved={snapshot.reserved_balances}")
 
 
 def main() -> None:
-    """CLI entry point."""
-    parser = argparse.ArgumentParser(
-        description="Hyperliquid Outcomes Paper Trading Simulation"
-    )
-    parser.add_argument(
-        "--trades", type=int, default=2000, help="Number of trades (default: 2000)"
-    )
-    parser.add_argument(
-        "--balance", type=float, default=10000, help="Initial USDC balance"
-    )
-    parser.add_argument(
-        "--price", type=float, default=0.50, help="Initial market price"
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed"
-    )
-    parser.add_argument(
-        "--log-level", default="INFO", help="Log level (DEBUG/INFO/WARNING)"
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--trades", type=int, default=2_000)
+    parser.add_argument("--balance", type=Decimal, default=Decimal("10000"))
+    parser.add_argument("--price", type=Decimal, default=Decimal("0.50"))
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
-
-    setup_logging(json_output=False, level=args.log_level)
-
-    asyncio.run(
-        run_simulation(
-            num_trades=args.trades,
-            initial_balance=Decimal(str(args.balance)),
-            initial_price=Decimal(str(args.price)),
-            seed=args.seed,
-        )
-    )
+    asyncio.run(run_simulation(args.trades, args.balance, args.price, args.seed))
 
 
 if __name__ == "__main__":

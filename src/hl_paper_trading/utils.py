@@ -11,15 +11,14 @@ import logging
 import os
 import sys
 from decimal import Decimal
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any, cast
 
 import structlog
-
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+
 
 def setup_logging(*, json_output: bool = False, level: str = "INFO") -> None:
     """Configure ``structlog`` for the process.
@@ -40,9 +39,7 @@ def setup_logging(*, json_output: bool = False, level: str = "INFO") -> None:
     if json_output:
         processors.append(structlog.processors.JSONRenderer())
     else:
-        processors.append(
-            structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
-        )
+        processors.append(structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()))
 
     # Convert level name to numeric value (compatible with structlog v24+/v25+)
     numeric_level = getattr(logging, level.upper(), logging.INFO)
@@ -65,12 +62,13 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     Returns:
         A structured logger instance.
     """
-    return structlog.get_logger(name)
+    return cast("structlog.stdlib.BoundLogger", structlog.get_logger(name))
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
 
 class Config:
     """Simple hierarchical configuration.
@@ -104,7 +102,7 @@ class Config:
 
     # -- accessors ----------------------------------------------------------
 
-    def get(self, key: str, *, default: Optional[str] = None) -> str:
+    def get(self, key: str, *, default: str | None = None) -> str:
         """Return a config value as string.
 
         Args:
@@ -138,7 +136,7 @@ class Config:
 
         raise KeyError(f"Config key '{key}' not found")
 
-    def get_int(self, key: str, *, default: Optional[int] = None) -> int:
+    def get_int(self, key: str, *, default: int | None = None) -> int:
         """Return a config value as int."""
         try:
             return int(self.get(key))
@@ -147,7 +145,7 @@ class Config:
                 return default
             raise
 
-    def get_decimal(self, key: str, *, default: Optional[Decimal] = None) -> Decimal:
+    def get_decimal(self, key: str, *, default: Decimal | None = None) -> Decimal:
         """Return a config value as ``Decimal``."""
         try:
             return Decimal(self.get(key))
@@ -156,7 +154,7 @@ class Config:
                 return default
             raise
 
-    def get_bool(self, key: str, *, default: Optional[bool] = None) -> bool:
+    def get_bool(self, key: str, *, default: bool | None = None) -> bool:
         """Return a config value as bool (``true/1/yes`` → True)."""
         try:
             return self.get(key).lower() in ("true", "1", "yes")
@@ -169,6 +167,7 @@ class Config:
 # ---------------------------------------------------------------------------
 # Decimal helpers
 # ---------------------------------------------------------------------------
+
 
 def decimal_round(value: Decimal, places: int = 4) -> Decimal:
     """Round a Decimal to the given number of decimal places.

@@ -23,9 +23,7 @@ Design Notes:
 
 from __future__ import annotations
 
-import abc
 from decimal import Decimal
-from typing import Optional
 
 from hl_paper_trading.types import Fill, OrderBookSnapshot, Trade
 from hl_paper_trading.utils import get_logger
@@ -33,7 +31,7 @@ from hl_paper_trading.virtual_oms import VirtualOMS
 from hl_paper_trading.virtual_wallet import VirtualWallet
 
 
-class BaseStrategy(abc.ABC):
+class BaseStrategy:
     """Abstract base class for paper trading strategies.
 
     Subclass this to implement your own market-making or directional
@@ -50,8 +48,8 @@ class BaseStrategy(abc.ABC):
             def on_orderbook_update(self, snapshot):
                 mid = snapshot.mid_price
                 if mid:
-                    self.oms.submit_order_sync(Side.BID, mid - 0.01, 10)
-                    self.oms.submit_order_sync(Side.ASK, mid + 0.01, 10)
+                    self.oms.submit_order_sync(Side.BUY, mid - 0.01, 10)
+                    self.oms.submit_order_sync(Side.SELL, mid + 0.01, 10)
     """
 
     def __init__(
@@ -163,14 +161,10 @@ class BaseStrategy(abc.ABC):
     # ------------------------------------------------------------------
 
     def get_position(self) -> Decimal:
-        """Current net YES inventory (convenience wrapper).
+        """Current total spot-token inventory for the engine coin."""
+        return self._wallet.total_balance(self._oms.coin)
 
-        Returns:
-            Positive = long YES, negative = short YES.
-        """
-        return self._wallet.yes_inventory
-
-    def get_mid_price(self, snapshot: OrderBookSnapshot) -> Optional[Decimal]:
+    def get_mid_price(self, snapshot: OrderBookSnapshot) -> Decimal | None:
         """Extract mid price from an order book snapshot.
 
         Args:
