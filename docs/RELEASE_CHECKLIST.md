@@ -17,8 +17,11 @@
 - [x] Generate JSON and Markdown reports twice for the first long real-feed run.
 - [x] Confirm byte-identical deterministic reports for that run.
 - [x] Fill the partial real-run fields in `docs/VALIDATION.md`.
-- [ ] Record at least 24 hours to storage outside git. The first run on `#8130`
-  stopped after about 12h50m and must not be presented as the final 24h report.
+- [x] Record at least 24 hours to storage outside git. Final run used `#8220`
+  on a server-managed systemd service.
+- [x] Generate JSON and Markdown reports twice for the 24-hour run.
+- [x] Confirm byte-identical deterministic reports for the 24-hour run.
+- [x] Fill the 24-hour real-run fields in `docs/VALIDATION.md`.
 - [ ] Replace every `[TBD]` in announcement and grant drafts.
 
 ## Publication
