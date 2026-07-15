@@ -1,0 +1,447 @@
+{
+  "schema_version": "demo-1",
+  "source_sha256": "2978ac390d3472439311d30d2ed9308f261f64a220b9446e49e851d99a1a1ffd",
+  "engine_version": "0.2.0",
+  "parameters": {
+    "quote_token": "USDC",
+    "initial_quote": "10000",
+    "initial_tokens": "1000",
+    "order_size": "10",
+    "latency_ms": "50"
+  },
+  "steps": [
+    {
+      "sequence": 0,
+      "kind": "metadata",
+      "timestamp": "2026-07-12T00:00:00Z",
+      "headline": "Fixture loaded",
+      "explanation": "The deterministic replay fixes the coin, balances, order size, and 50 ms activation latency before any market event is applied.",
+      "book": null,
+      "trade": null,
+      "orders": [],
+      "fills": [],
+      "wallet": {
+        "quote_token": "USDC",
+        "available_balances": {
+          "#8050": "1000",
+          "USDC": "10000"
+        },
+        "reserved_balances": {
+          "#8050": "0",
+          "USDC": "0"
+        },
+        "nav": "10500.00",
+        "initial_nav": "10500.00",
+        "pnl": "0.00",
+        "timestamp": "2026-07-12T00:00:00Z"
+      },
+      "queue_consumed_delta": "0",
+      "duplicate_ignored": false
+    },
+    {
+      "sequence": 1,
+      "kind": "book",
+      "timestamp": "2026-07-12T00:00:00Z",
+      "headline": "Observed L2; quotes enter latency",
+      "explanation": "The baseline submits BUY 10 at the best bid and SELL 10 at the best ask. Funds and tokens are reserved immediately.",
+      "book": {
+        "coin": "#8050",
+        "bids": [
+          {
+            "price": "0.49",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "asks": [
+          {
+            "price": "0.51",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "timestamp": "2026-07-12T00:00:00Z"
+      },
+      "trade": null,
+      "orders": [
+        {
+          "order_ref": "order-1",
+          "side": "BUY",
+          "price": "0.49",
+          "size": "10",
+          "status": "PENDING",
+          "filled_size": "0",
+          "remaining": "10",
+          "queue_ahead": "0",
+          "activated_at": null
+        },
+        {
+          "order_ref": "order-2",
+          "side": "SELL",
+          "price": "0.51",
+          "size": "10",
+          "status": "PENDING",
+          "filled_size": "0",
+          "remaining": "10",
+          "queue_ahead": "0",
+          "activated_at": null
+        }
+      ],
+      "fills": [],
+      "wallet": {
+        "quote_token": "USDC",
+        "available_balances": {
+          "#8050": "990",
+          "USDC": "9995.10"
+        },
+        "reserved_balances": {
+          "#8050": "10",
+          "USDC": "4.90"
+        },
+        "nav": "10500.00",
+        "initial_nav": "10500.00",
+        "pnl": "0.00",
+        "timestamp": "2026-07-12T00:00:00Z"
+      },
+      "queue_consumed_delta": "0",
+      "duplicate_ignored": false
+    },
+    {
+      "sequence": 2,
+      "kind": "book",
+      "timestamp": "2026-07-12T00:00:00.100000Z",
+      "headline": "Latency elapsed; queue seeded",
+      "explanation": "Both virtual orders activate behind the 25 tokens already visible at their prices. A book decrease alone would not advance them.",
+      "book": {
+        "coin": "#8050",
+        "bids": [
+          {
+            "price": "0.49",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "asks": [
+          {
+            "price": "0.51",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "timestamp": "2026-07-12T00:00:00.100000Z"
+      },
+      "trade": null,
+      "orders": [
+        {
+          "order_ref": "order-1",
+          "side": "BUY",
+          "price": "0.49",
+          "size": "10",
+          "status": "OPEN",
+          "filled_size": "0",
+          "remaining": "10",
+          "queue_ahead": "25",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        },
+        {
+          "order_ref": "order-2",
+          "side": "SELL",
+          "price": "0.51",
+          "size": "10",
+          "status": "OPEN",
+          "filled_size": "0",
+          "remaining": "10",
+          "queue_ahead": "25",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        }
+      ],
+      "fills": [],
+      "wallet": {
+        "quote_token": "USDC",
+        "available_balances": {
+          "#8050": "990",
+          "USDC": "9995.10"
+        },
+        "reserved_balances": {
+          "#8050": "10",
+          "USDC": "4.90"
+        },
+        "nav": "10500.00",
+        "initial_nav": "10500.00",
+        "pnl": "0.00",
+        "timestamp": "2026-07-12T00:00:00.100000Z"
+      },
+      "queue_consumed_delta": "0",
+      "duplicate_ignored": false
+    },
+    {
+      "sequence": 3,
+      "kind": "trade",
+      "timestamp": "2026-07-12T00:00:00.200000Z",
+      "headline": "SELL trade consumes the BUY queue",
+      "explanation": "The observed trade uses 25 against visible queue; the remaining volume produces a BUY partial fill of 5.",
+      "book": {
+        "coin": "#8050",
+        "bids": [
+          {
+            "price": "0.49",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "asks": [
+          {
+            "price": "0.51",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "timestamp": "2026-07-12T00:00:00.100000Z"
+      },
+      "trade": {
+        "trade_id": "trade-1",
+        "side": "SELL",
+        "price": "0.49",
+        "size": "30",
+        "duplicate": false
+      },
+      "orders": [
+        {
+          "order_ref": "order-1",
+          "side": "BUY",
+          "price": "0.49",
+          "size": "10",
+          "status": "PARTIALLY_FILLED",
+          "filled_size": "5",
+          "remaining": "5",
+          "queue_ahead": "0",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        },
+        {
+          "order_ref": "order-2",
+          "side": "SELL",
+          "price": "0.51",
+          "size": "10",
+          "status": "OPEN",
+          "filled_size": "0",
+          "remaining": "10",
+          "queue_ahead": "25",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        }
+      ],
+      "fills": [
+        {
+          "order_ref": "order-1",
+          "side": "BUY",
+          "price": "0.49",
+          "size": "5",
+          "aggressor_trade_id": "trade-1"
+        }
+      ],
+      "wallet": {
+        "quote_token": "USDC",
+        "available_balances": {
+          "#8050": "995",
+          "USDC": "9995.10"
+        },
+        "reserved_balances": {
+          "#8050": "10",
+          "USDC": "2.45"
+        },
+        "nav": "10500.05",
+        "initial_nav": "10500.00",
+        "pnl": "0.05",
+        "timestamp": "2026-07-12T00:00:00.200000Z"
+      },
+      "queue_consumed_delta": "25",
+      "duplicate_ignored": false
+    },
+    {
+      "sequence": 4,
+      "kind": "trade",
+      "timestamp": "2026-07-12T00:00:00.300000Z",
+      "headline": "BUY trade consumes the SELL queue",
+      "explanation": "The observed trade uses 25 against visible queue; the remaining volume produces a SELL partial fill of 5.",
+      "book": {
+        "coin": "#8050",
+        "bids": [
+          {
+            "price": "0.49",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "asks": [
+          {
+            "price": "0.51",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "timestamp": "2026-07-12T00:00:00.100000Z"
+      },
+      "trade": {
+        "trade_id": "trade-2",
+        "side": "BUY",
+        "price": "0.51",
+        "size": "30",
+        "duplicate": false
+      },
+      "orders": [
+        {
+          "order_ref": "order-1",
+          "side": "BUY",
+          "price": "0.49",
+          "size": "10",
+          "status": "PARTIALLY_FILLED",
+          "filled_size": "5",
+          "remaining": "5",
+          "queue_ahead": "0",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        },
+        {
+          "order_ref": "order-2",
+          "side": "SELL",
+          "price": "0.51",
+          "size": "10",
+          "status": "PARTIALLY_FILLED",
+          "filled_size": "5",
+          "remaining": "5",
+          "queue_ahead": "0",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        }
+      ],
+      "fills": [
+        {
+          "order_ref": "order-2",
+          "side": "SELL",
+          "price": "0.51",
+          "size": "5",
+          "aggressor_trade_id": "trade-2"
+        }
+      ],
+      "wallet": {
+        "quote_token": "USDC",
+        "available_balances": {
+          "#8050": "995",
+          "USDC": "9997.65"
+        },
+        "reserved_balances": {
+          "#8050": "5",
+          "USDC": "2.45"
+        },
+        "nav": "10500.10",
+        "initial_nav": "10500.00",
+        "pnl": "0.10",
+        "timestamp": "2026-07-12T00:00:00.300000Z"
+      },
+      "queue_consumed_delta": "25",
+      "duplicate_ignored": false
+    },
+    {
+      "sequence": 5,
+      "kind": "trade",
+      "timestamp": "2026-07-12T00:00:00.300000Z",
+      "headline": "Duplicate ignored; reservations released",
+      "explanation": "The repeated exchange trade ID creates no second fill. Replay finalization cancels the remaining virtual size and returns every reservation to available balance.",
+      "book": {
+        "coin": "#8050",
+        "bids": [
+          {
+            "price": "0.49",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "asks": [
+          {
+            "price": "0.51",
+            "size": "25",
+            "count": 1
+          }
+        ],
+        "timestamp": "2026-07-12T00:00:00.100000Z"
+      },
+      "trade": {
+        "trade_id": "trade-2",
+        "side": "BUY",
+        "price": "0.51",
+        "size": "30",
+        "duplicate": true
+      },
+      "orders": [
+        {
+          "order_ref": "order-1",
+          "side": "BUY",
+          "price": "0.49",
+          "size": "10",
+          "status": "CANCELLED",
+          "filled_size": "5",
+          "remaining": "5",
+          "queue_ahead": "0",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        },
+        {
+          "order_ref": "order-2",
+          "side": "SELL",
+          "price": "0.51",
+          "size": "10",
+          "status": "CANCELLED",
+          "filled_size": "5",
+          "remaining": "5",
+          "queue_ahead": "0",
+          "activated_at": "2026-07-12T00:00:00.100000Z"
+        }
+      ],
+      "fills": [],
+      "wallet": {
+        "quote_token": "USDC",
+        "available_balances": {
+          "#8050": "1000",
+          "USDC": "10000.10"
+        },
+        "reserved_balances": {
+          "#8050": "0",
+          "USDC": "0.00"
+        },
+        "nav": "10500.10",
+        "initial_nav": "10500.00",
+        "pnl": "0.10",
+        "timestamp": "2026-07-12T00:00:00.300000Z"
+      },
+      "queue_consumed_delta": "0",
+      "duplicate_ignored": true
+    }
+  ],
+  "summary": {
+    "schema_version": "1",
+    "source_sha256": "2978ac390d3472439311d30d2ed9308f261f64a220b9446e49e851d99a1a1ffd",
+    "coin": "#8050",
+    "quote_token": "USDC",
+    "start": "2026-07-12T00:00:00Z",
+    "end": "2026-07-12T00:00:00.300000Z",
+    "metadata_events": 1,
+    "book_events": 2,
+    "trade_events": 3,
+    "feed_gaps_over_5s": 0,
+    "orders_submitted": 2,
+    "orders_rejected": 0,
+    "fills": 2,
+    "filled_volume": "10",
+    "queue_volume_consumed": "50",
+    "duplicate_trades_ignored": 1,
+    "final_nav": "10500.10",
+    "pnl": "0.10",
+    "invariants": {
+      "balances_non_negative": true,
+      "trade_volume_conserved": true,
+      "reservations_released": true
+    },
+    "limitations": [
+      "L2 decreases without trades are treated as cancellations.",
+      "Receive-time gaps include periods of legitimate market inactivity.",
+      "Split, merge, negate, settlement, and fees are outside v0.2.",
+      "The included strategy is a validation baseline, not a profitability claim."
+    ]
+  }
+}

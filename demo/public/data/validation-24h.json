@@ -1,0 +1,31 @@
+{
+  "schema_version": "1",
+  "source_sha256": "8d155b56c98daaf186eaa12150d2560f71fa2388a7b73776c9b2520ae2249dfc",
+  "coin": "#8220",
+  "quote_token": "USDC",
+  "start": "2026-07-13T19:21:27.943783Z",
+  "end": "2026-07-14T19:21:26.107000Z",
+  "metadata_events": 1,
+  "book_events": 16087,
+  "trade_events": 562,
+  "feed_gaps_over_5s": 15755,
+  "orders_submitted": 550,
+  "orders_rejected": 0,
+  "fills": 38,
+  "filled_volume": "364.0",
+  "queue_volume_consumed": "12875.0",
+  "duplicate_trades_ignored": 240,
+  "final_nav": "10544.669730",
+  "pnl": "-4.060270",
+  "invariants": {
+    "balances_non_negative": true,
+    "trade_volume_conserved": true,
+    "reservations_released": true
+  },
+  "limitations": [
+    "L2 decreases without trades are treated as cancellations.",
+    "Receive-time gaps include periods of legitimate market inactivity.",
+    "Split, merge, negate, settlement, and fees are outside v0.2.",
+    "The included strategy is a validation baseline, not a profitability claim."
+  ]
+}

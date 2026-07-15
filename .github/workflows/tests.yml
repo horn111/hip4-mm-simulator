@@ -41,3 +41,47 @@ jobs:
         run: |
           pip install build
           python -m build
+
+  demo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install simulator
+        run: python -m pip install -e .
+
+      - name: Check committed demo data
+        run: python scripts/export_demo_data.py --check
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: demo/package-lock.json
+
+      - name: Install demo dependencies
+        working-directory: demo
+        run: npm ci
+
+      - name: Lint demo
+        working-directory: demo
+        run: npm run lint
+
+      - name: Type check demo
+        working-directory: demo
+        run: npm run typecheck
+
+      - name: Test demo
+        working-directory: demo
+        run: npm run test
+
+      - name: Build static demo
+        working-directory: demo
+        run: npm run build

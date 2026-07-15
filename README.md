@@ -14,6 +14,10 @@ market makers.
 This is an **alpha research tool**, not a production trading system and not a
 claim that the included baseline strategy is profitable.
 
+**[Open the 60-second execution demo](https://hip4-mm-simulator.vercel.app/)**
+to see an observed L2 queue, aggressor trade, queue consumption, and partial
+fill replayed through the Python engine.
+
 ## What v0.2 validates
 
 - Dynamic `outcomeMeta` discovery, including custom side labels, multi-outcome
