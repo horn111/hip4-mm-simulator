@@ -13,7 +13,15 @@ from pydantic import BaseModel
 
 from hl_paper_trading.matching_engine import MatchingEngine
 from hl_paper_trading.recording import RecordedEvent
-from hl_paper_trading.types import OrderBookSnapshot, Side, Trade
+from hl_paper_trading.types import (
+    Fill,
+    Order,
+    OrderBookSnapshot,
+    OrderStatus,
+    PortfolioSnapshot,
+    Side,
+    Trade,
+)
 from hl_paper_trading.utils import Config
 from hl_paper_trading.virtual_oms import VirtualOMS
 from hl_paper_trading.virtual_wallet import VirtualWallet
@@ -47,6 +55,64 @@ class ReplayReport(BaseModel):
     )
 
 
+class ReplayTraceOrder(BaseModel):
+    """Stable, presentation-safe view of one simulated order."""
+
+    order_ref: str
+    side: Side
+    price: Decimal
+    size: Decimal
+    status: OrderStatus
+    filled_size: Decimal
+    remaining: Decimal
+    queue_ahead: Decimal
+    activated_at: datetime | None
+
+
+class ReplayTraceFill(BaseModel):
+    """Stable fill view without the runtime-generated UUID."""
+
+    order_ref: str
+    side: Side
+    price: Decimal
+    size: Decimal
+    aggressor_trade_id: str | None
+
+
+class ReplayTraceTrade(BaseModel):
+    trade_id: str | None
+    side: Side
+    price: Decimal
+    size: Decimal
+    duplicate: bool = False
+
+
+class ReplayTraceStep(BaseModel):
+    sequence: int
+    kind: str
+    timestamp: datetime
+    headline: str
+    explanation: str
+    book: OrderBookSnapshot | None
+    trade: ReplayTraceTrade | None
+    orders: tuple[ReplayTraceOrder, ...]
+    fills: tuple[ReplayTraceFill, ...]
+    wallet: PortfolioSnapshot
+    queue_consumed_delta: Decimal
+    duplicate_ignored: bool
+
+
+class DemoReplayTrace(BaseModel):
+    """Internal JSON contract consumed by the grant-reviewer demo."""
+
+    schema_version: str = "demo-1"
+    source_sha256: str
+    engine_version: str = "0.2.0"
+    parameters: dict[str, str]
+    steps: tuple[ReplayTraceStep, ...]
+    summary: ReplayReport
+
+
 def _events(path: Path) -> Iterator[RecordedEvent]:
     with path.open(encoding="utf-8") as source:
         for line in source:
@@ -63,6 +129,65 @@ def replay_file(
     order_size: Decimal = Decimal("10"),
     latency_ms: int = 50,
 ) -> ReplayReport:
+    report, _ = _run_replay(
+        path,
+        quote_token=quote_token,
+        initial_quote=initial_quote,
+        initial_tokens=initial_tokens,
+        order_size=order_size,
+        latency_ms=latency_ms,
+        capture_trace=False,
+    )
+    return report
+
+
+def build_demo_trace(
+    path: str | Path,
+    *,
+    quote_token: str = "USDC",
+    initial_quote: Decimal = Decimal("10000"),
+    initial_tokens: Decimal = Decimal("1000"),
+    order_size: Decimal = Decimal("10"),
+    latency_ms: int = 50,
+) -> DemoReplayTrace:
+    """Build the internal deterministic trace used by the static demo.
+
+    This helper intentionally is not re-exported from ``hl_paper_trading``;
+    the supported v0.2 public replay contract remains :func:`replay_file`.
+    """
+    report, steps = _run_replay(
+        path,
+        quote_token=quote_token,
+        initial_quote=initial_quote,
+        initial_tokens=initial_tokens,
+        order_size=order_size,
+        latency_ms=latency_ms,
+        capture_trace=True,
+    )
+    return DemoReplayTrace(
+        source_sha256=report.source_sha256,
+        parameters={
+            "quote_token": quote_token,
+            "initial_quote": str(initial_quote),
+            "initial_tokens": str(initial_tokens),
+            "order_size": str(order_size),
+            "latency_ms": str(latency_ms),
+        },
+        steps=steps,
+        summary=report,
+    )
+
+
+def _run_replay(
+    path: str | Path,
+    *,
+    quote_token: str,
+    initial_quote: Decimal,
+    initial_tokens: Decimal,
+    order_size: Decimal,
+    latency_ms: int,
+    capture_trace: bool,
+) -> tuple[ReplayReport, tuple[ReplayTraceStep, ...]]:
     source = Path(path)
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     first_book: OrderBookSnapshot | None = None
@@ -100,8 +225,11 @@ def replay_file(
     filled_volume = Decimal("0")
     fills_per_trade: dict[str, Decimal] = {}
     trade_sizes: dict[str, Decimal] = {}
+    trace_steps: list[ReplayTraceStep] = []
+    order_refs: dict[str, str] = {}
+    latest_book: OrderBookSnapshot | None = None
 
-    for event in _events(source):
+    for sequence, event in enumerate(_events(source)):
         counts[event.event_type] += 1
         start = start or event.exchange_timestamp
         end = event.exchange_timestamp
@@ -112,7 +240,11 @@ def replay_file(
             gaps += 1
         previous_received = event.received_timestamp
         market_event = event.to_market_event()
+        step_fills: list[Fill] = []
+        queue_before = Decimal(str(engine.stats["queue_volume_consumed"]))
+        duplicates_before = int(engine.stats["duplicates_ignored"])
         if isinstance(market_event, OrderBookSnapshot):
+            latest_book = market_event
             oms.process_book(market_event)
             oms.activate_pending(market_event.timestamp)
             if market_event.mid_price is not None:
@@ -121,14 +253,51 @@ def replay_file(
         elif isinstance(market_event, Trade):
             if market_event.trade_id:
                 trade_sizes.setdefault(market_event.trade_id, market_event.size)
-            fills = oms.process_trade(market_event)
-            for fill in fills:
+            step_fills = oms.process_trade(market_event)
+            for fill in step_fills:
                 filled_volume += fill.fill_size
                 if fill.aggressor_trade_id:
                     fills_per_trade[fill.aggressor_trade_id] = (
                         fills_per_trade.get(fill.aggressor_trade_id, Decimal("0"))
                         + fill.fill_size
                     )
+
+        if capture_trace:
+            for order in oms.all_orders:
+                order_refs.setdefault(
+                    order.order_id, f"order-{len(order_refs) + 1}"
+                )
+            queue_after = Decimal(str(engine.stats["queue_volume_consumed"]))
+            duplicate_ignored = (
+                int(engine.stats["duplicates_ignored"]) > duplicates_before
+            )
+            headline, explanation = _trace_copy(
+                event.event_type,
+                market_event,
+                step_fills,
+                duplicate_ignored,
+                queue_after - queue_before,
+            )
+            trace_steps.append(
+                ReplayTraceStep(
+                    sequence=sequence,
+                    kind=event.event_type,
+                    timestamp=event.exchange_timestamp,
+                    headline=headline,
+                    explanation=explanation,
+                    book=latest_book,
+                    trade=_trace_trade(market_event, duplicate_ignored),
+                    orders=_trace_orders(oms.all_orders, order_refs),
+                    fills=_trace_fills(step_fills, order_refs),
+                    wallet=wallet.snapshot(
+                        {coin: last_mark},
+                        quote_token=quote_token,
+                        timestamp=event.exchange_timestamp,
+                    ),
+                    queue_consumed_delta=queue_after - queue_before,
+                    duplicate_ignored=duplicate_ignored,
+                )
+            )
 
     oms.cancel_all()
     assert start is not None and end is not None
@@ -147,7 +316,7 @@ def replay_file(
     reservations_released = all(
         value == 0 for value in snapshot.reserved_balances.values()
     )
-    return ReplayReport(
+    report = ReplayReport(
         source_sha256=source_hash,
         coin=coin,
         quote_token=quote_token,
@@ -171,6 +340,110 @@ def replay_file(
             "reservations_released": reservations_released,
         },
     )
+    if trace_steps:
+        last_step = trace_steps[-1]
+        last_step.orders = _trace_orders(oms.all_orders, order_refs)
+        last_step.wallet = snapshot
+        if last_step.duplicate_ignored:
+            last_step.headline = "Duplicate ignored; reservations released"
+            last_step.explanation = (
+                "The repeated exchange trade ID creates no second fill. "
+                "Replay finalization cancels the remaining virtual size and "
+                "returns every reservation to available balance."
+            )
+    return report, tuple(trace_steps)
+
+
+def _trace_orders(
+    orders: list[Order], order_refs: dict[str, str]
+) -> tuple[ReplayTraceOrder, ...]:
+    return tuple(
+        ReplayTraceOrder(
+            order_ref=order_refs[order.order_id],
+            side=order.side,
+            price=order.price,
+            size=order.size,
+            status=order.status,
+            filled_size=order.filled_size,
+            remaining=order.remaining,
+            queue_ahead=order.queue_ahead,
+            activated_at=order.activated_at,
+        )
+        for order in orders
+    )
+
+
+def _trace_fills(
+    fills: list[Fill], order_refs: dict[str, str]
+) -> tuple[ReplayTraceFill, ...]:
+    return tuple(
+        ReplayTraceFill(
+            order_ref=order_refs[fill.order_id],
+            side=fill.side,
+            price=fill.fill_price,
+            size=fill.fill_size,
+            aggressor_trade_id=fill.aggressor_trade_id,
+        )
+        for fill in fills
+    )
+
+
+def _trace_trade(
+    market_event: OrderBookSnapshot | Trade | None, duplicate: bool
+) -> ReplayTraceTrade | None:
+    if not isinstance(market_event, Trade):
+        return None
+    return ReplayTraceTrade(
+        trade_id=market_event.trade_id,
+        side=market_event.side,
+        price=market_event.price,
+        size=market_event.size,
+        duplicate=duplicate,
+    )
+
+
+def _trace_copy(
+    event_type: str,
+    market_event: OrderBookSnapshot | Trade | None,
+    fills: list[Fill],
+    duplicate: bool,
+    queue_consumed: Decimal,
+) -> tuple[str, str]:
+    if event_type == "metadata":
+        return (
+            "Fixture loaded",
+            "The deterministic replay fixes the coin, balances, order size, "
+            "and 50 ms activation latency before any market event is applied.",
+        )
+    if isinstance(market_event, OrderBookSnapshot):
+        if market_event.timestamp.microsecond == 0:
+            return (
+                "Observed L2; quotes enter latency",
+                "The baseline submits BUY 10 at the best bid and SELL 10 at "
+                "the best ask. Funds and tokens are reserved immediately.",
+            )
+        return (
+            "Latency elapsed; queue seeded",
+            "Both virtual orders activate behind the 25 tokens already visible "
+            "at their prices. A book decrease alone would not advance them.",
+        )
+    if duplicate:
+        return (
+            "Duplicate exchange trade ignored",
+            "The trade ID has already been processed, so it cannot create a "
+            "second paper fill.",
+        )
+    if isinstance(market_event, Trade):
+        passive_side = Side.SELL if market_event.side is Side.BUY else Side.BUY
+        fill_size = sum((fill.fill_size for fill in fills), Decimal("0"))
+        return (
+            f"{market_event.side.value} trade consumes the "
+            f"{passive_side.value} queue",
+            f"The observed trade uses {queue_consumed} against visible queue; "
+            f"the remaining volume produces a {passive_side.value} partial "
+            f"fill of {fill_size}.",
+        )
+    return "Event recorded", "The event is preserved in replay order."
 
 
 def _maintain_baseline_quotes(
