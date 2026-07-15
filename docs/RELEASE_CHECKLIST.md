@@ -22,18 +22,18 @@
 - [x] Generate JSON and Markdown reports twice for the 24-hour run.
 - [x] Confirm byte-identical deterministic reports for the 24-hour run.
 - [x] Fill the 24-hour real-run fields in `docs/VALIDATION.md`.
-- [ ] Replace every `[TBD]` in announcement and grant drafts.
+- [x] Replace every `[TBD]` in announcement and grant drafts.
 
 ## Publication
 
-- [ ] Confirm `hip4-mm-simulator` is available on PyPI; use
+- [x] Confirm `hip4-mm-simulator` is available on PyPI; use
   `hip4-mm-sim` only if unavailable.
-- [ ] Change `CHANGELOG.md` from Unreleased to the actual UTC date.
-- [ ] Commit and push the v0.2 branch.
-- [ ] Merge after CI passes on Python 3.11 and 3.12.
-- [ ] Tag `v0.2.0` and create a GitHub Release with the validation report.
-- [ ] Publish the same wheel/sdist to PyPI.
-- [ ] Verify installation from PyPI in a new environment.
+- [x] Change `CHANGELOG.md` from Unreleased to the actual UTC date.
+- [x] Commit and push the v0.2 branch.
+- [x] Merge after CI passes on Python 3.11 and 3.12.
+- [x] Tag `v0.2.0` and create a GitHub Release with the validation report.
+- [x] Publish the same wheel/sdist to PyPI.
+- [x] Verify installation from PyPI in a new environment.
 
 ## Launch and grant
 
